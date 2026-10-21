@@ -26,7 +26,7 @@ function engine(on: On, reply: (prompt: string) => Reply | null) {
   mock.store(on)
   on('session.id', () => ({ value: 'session-1' }))
   on('session.messages', () => ({ value: [] }))
-  on('command.register', () => ({ value: { command: 'tasks' } }))
+  on('command.register', () => ({ value: { command: 'history' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [] }))
   on('ui.log', () => ({ value: undefined }))
@@ -158,14 +158,14 @@ test('without a summary the raw prompt and reply stay', async ($, on) => {
   await ui.unmount()
 })
 
-test('/tasks clear empties the list', async ($, on) => {
+test('/history clear empties the list', async ($, on) => {
   engine(on, () => null)
 
   await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
   await turn($, 't1', 'Write a changelog entry', 'Added the entry.')
 
   const result = await $.command.run({
-    command: 'tasks',
+    command: 'history',
     args: 'clear',
     origin: { kind: 'composer' },
     presentation: { isFullscreen: true, columns: 160 },

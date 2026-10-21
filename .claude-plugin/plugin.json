@@ -1,6 +1,6 @@
 {
   "name": "task-history",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A collapsible task history of the current session in a side pane: each prompt, its result, open questions, files and duration.",
   "author": { "name": "crysix", "url": "https://github.com/crysix" },
   "homepage": "https://github.com/crysix/claude-task-history",

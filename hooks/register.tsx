@@ -23,7 +23,7 @@ import {
 } from './logic'
 
 const PANE = 'task-history'
-const COMMAND = 'tasks'
+const COMMAND = 'history'
 const SESSIONS_KEY = 'sessions'
 const OPEN_KEY = 'isOpen'
 const KEEP_SESSIONS = 30
@@ -385,7 +385,7 @@ export const register: Register = (on, options) => {
       await $.store.set(OPEN_KEY, false)
       await $.ui.close({ id: PANE })
 
-      return { text: 'Task history hidden. /tasks shows it again.' }
+      return { text: `Task history hidden. /${COMMAND} shows it again.` }
     }
 
     wantsPane = true

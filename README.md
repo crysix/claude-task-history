@@ -52,7 +52,7 @@ by side) without scrolling back through the whole transcript.
 - **For the right-hand column, the terminal's fullscreen layout** and a window
   at least 110 columns wide. The pane opens by itself there. On the terminal's
   main screen (no fullscreen layout, e.g. inside tmux by default) Claude Code
-  places panes inline above the prompt instead; open it there with `/tasks`.
+  places panes inline above the prompt instead; open it there with `/history`.
 - The pane is also drawn in the desktop app's Code tab and in the VS Code
   extension. Where it sits there is up to the app.
 - The mod works only in Claude Code, not in the claude.ai chat.
@@ -83,12 +83,12 @@ terminal at the user scope loads in the desktop app's local sessions too.
 
 | Command          | What it does                                   |
 | ---------------- | ---------------------------------------------- |
-| `/tasks`         | Show or hide the pane                          |
-| `/tasks open`    | Show the pane                                  |
-| `/tasks close`   | Hide the pane                                  |
-| `/tasks clear`   | Empty the history of the current session       |
+| `/history`       | Show or hide the pane                          |
+| `/history open`  | Show the pane                                  |
+| `/history close` | Hide the pane                                  |
+| `/history clear` | Empty the history of the current session       |
 
-`/tasks` runs at once, even while Claude is working.
+`/history` runs at once, even while Claude is working.
 
 **Mouse:** click a task to expand or collapse it, and click *files changed* or
 *Prompt* to fold those out.
@@ -98,7 +98,7 @@ terminal at the user scope loads in the desktop app's local sessions too.
 `Esc` returns to the prompt.
 
 If you close the pane by hand, it stays closed in later sessions until you open
-it again with `/tasks`.
+it again with `/history`.
 
 ## How it works
 
