@@ -183,3 +183,7 @@ A session started with `--plugin-dir` reloads the mod when you save a file.
 ## Author
 
 Made by [crysix](https://github.com/crysix).
+
+## License
+
+[MIT](LICENSE)
