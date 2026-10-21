@@ -1,0 +1,24 @@
+{
+  "name": "task-history",
+  "version": "0.1.0",
+  "description": "A collapsible task history of the current session in a side pane: each prompt, its result, open questions, files and duration.",
+  "author": { "name": "crysix", "url": "https://github.com/crysix" },
+  "homepage": "https://github.com/crysix/claude-task-history",
+  "repository": "https://github.com/crysix/claude-task-history",
+  "keywords": ["mod", "pane", "history", "tasks", "sidebar"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "summaries": {
+      "type": "boolean",
+      "title": "AI summaries",
+      "description": "Summarize each finished task with a small model (title, one-line result, open questions, follow-up grouping). Off: raw text only, no model calls.",
+      "default": true
+    },
+    "summaryModel": {
+      "type": "string",
+      "title": "Summary model",
+      "description": "The model alias or id used for summaries.",
+      "default": "haiku"
+    }
+  }
+}

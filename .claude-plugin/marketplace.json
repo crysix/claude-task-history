@@ -1,0 +1,11 @@
+{
+  "name": "claude-task-history",
+  "owner": { "name": "crysix", "url": "https://github.com/crysix" },
+  "plugins": [
+    {
+      "name": "task-history",
+      "source": "./",
+      "description": "A collapsible task history of the current session in a side pane: each prompt, its result, open questions, files and duration."
+    }
+  ]
+}
