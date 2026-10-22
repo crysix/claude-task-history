@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { Engine } from 'claude-code/testing'
+import type { Engine, Mounted } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
 import { changedPaths, parseGitStatus, relativePath } from '../hooks/logic'
@@ -18,7 +18,10 @@ const PANE = {
   },
 } as const
 
-const SURFACES = ['terminal', 'desktop'] as const
+const SURFACES = ['terminal', 'desktop', 'vscode'] as const
+
+/** What a press on a row is on each surface: a Button, a row module's click, an answered link. */
+const ROWS = { terminal: 'Button', desktop: 'Client', vscode: 'Markdown' } as const
 
 type Reply = { isFollowUp?: boolean; title: string; result: string; openPoints?: string[]; isWaitingForUser?: boolean }
 
@@ -34,6 +37,7 @@ function engine(on: On, reply: (prompt: string) => Reply | null, world: World = 
   const clock = mock.clock(on, { now: 1_000_000 })
   const notices: { text: string; title?: string }[] = []
   const statuses: (string | undefined)[] = []
+  const fills: string[] = []
   mock.store(on, world.store)
   on('ui.notify', (_, e) => {
     notices.push({ text: e.text, title: e.title })
@@ -54,6 +58,11 @@ function engine(on: On, reply: (prompt: string) => Reply | null, world: World = 
       value: { exitCode: git === undefined ? 128 : 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
     }
   })
+  on('prompt.fill', (_, e) => {
+    fills.push(e.text)
+
+    return { isFilled: true }
+  })
   on('session.id', () => ({ value: 'session-1' }))
   on('session.messages', () => ({ value: [] }))
   on('command.register', () => ({ value: { command: 'history' } }))
@@ -73,7 +82,7 @@ function engine(on: On, reply: (prompt: string) => Reply | null, world: World = 
       : { value: { isAnswered: true, text: JSON.stringify(answer), usage } }
   })
 
-  return { clock, notices, statuses }
+  return { clock, notices, statuses, fills }
 }
 
 /** A summary prompt less the task before, the part the mock answers by. */
@@ -81,9 +90,17 @@ function request(prompt: string): string {
   return prompt.replace(/<previous>[\s\S]*<\/previous>/, '')
 }
 
-/** A press on a toggle: the Button in the terminal, the link answering it elsewhere. */
-function toggleOf(surface: string, key: string) {
-  return surface === 'terminal' ? { key } : { key, link: { href: `https://task-history.invalid/${encodeURIComponent(key)}` } }
+/** Presses a row: its Button in the terminal, a click on the row module on desktop, its link in VS Code. */
+async function pressRow(ui: Mounted<(typeof SURFACES)[number], 'Pane'>, surface: (typeof SURFACES)[number], key: string) {
+  if (surface === 'desktop') {
+    // Mounted over all three surfaces holds only their common acts; this one is desktop's.
+    const desktop = ui as unknown as Mounted<'desktop', 'Pane'>
+    await desktop.pointer({ type: 'down', x: 3, y: 0, button: 'left', in: key })
+  } else if (surface === 'vscode') {
+    await ui.press({ key, link: { href: `https://task-history.invalid/${encodeURIComponent(key)}` } })
+  } else {
+    await ui.press({ key })
+  }
 }
 
 async function turn(
@@ -98,7 +115,7 @@ async function turn(
 }
 
 test('a task shows its summary, open question and files on every surface', async ($, on) => {
-  const { clock } = engine(on, () => ({
+  const { clock, fills } = engine(on, () => ({
     title: 'Fix the login bug',
     result: 'Session check fixed in login.ts',
     openPoints: ['Add a regression test?'],
@@ -121,33 +138,40 @@ test('a task shows its summary, open question and files on every surface', async
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
 
+    expect((await ui.find({ key: 't1' }))?.type).toBe(ROWS[surface])
+
     if (surface === 'terminal') {
       // The whole row is one press.
       expect((await ui.find({ key: 't1' }))?.text).toMatch(/\? Fix the login bug/)
+    } else if (surface === 'desktop') {
+      // The row module draws the whole row; a click anywhere on it presses.
+      expect(await ui.find({ in: 't1', type: 'Text', text: /Fix the login bug/ })).toBeDefined()
     } else {
       // A chevron link is the press, the title plain text beside it.
-      expect((await ui.find({ key: 't1' }))?.type).toBe('Markdown')
       expect(await ui.find({ type: 'Text', text: /Fix the login bug/ })).toBeDefined()
     }
 
     expect(await ui.find({ type: 'Text', text: /Add a regression test\?/ })).toBeDefined()
 
-    await ui.press(toggleOf(surface, 't1'))
+    await pressRow(ui, surface, 't1')
     expect(await ui.find({ type: 'Text', text: /→ Session check fixed in login\.ts/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /waiting for you · 1m12s · 2 tools/ })).toBeDefined()
-    expect(await ui.find({ text: /1 file changed/ })).toBeDefined()
+    expect(await ui.find({ text: /1 file changed/, ...(surface === 'desktop' && { in: 'files:t1' }) })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'src/login.ts' })).toBeUndefined()
 
-    await ui.press(toggleOf(surface, 'files:t1'))
+    await pressRow(ui, surface, 'files:t1')
     expect(await ui.find({ type: 'Text', text: 'src/login.ts' })).toBeDefined()
 
-    await ui.press(toggleOf(surface, 'prompt:t1'))
+    await pressRow(ui, surface, 'prompt:t1')
     expect(await ui.find({ type: 'Text', text: /users get logged out/ })).toBeDefined()
 
+    await pressRow(ui, surface, 'insert:t1')
+    expect(fills.at(-1)).toBe('please fix the login bug, users get logged out')
+
     // Collapse again, so the next surface starts from the same place.
-    await ui.press(toggleOf(surface, 'files:t1'))
-    await ui.press(toggleOf(surface, 'prompt:t1'))
-    await ui.press(toggleOf(surface, 't1'))
+    await pressRow(ui, surface, 'files:t1')
+    await pressRow(ui, surface, 'prompt:t1')
+    await pressRow(ui, surface, 't1')
     await ui.unmount()
   }
 })
@@ -171,17 +195,17 @@ test('replies and follow-ups fold into the task they continue', async ($, on) =>
 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    const rows = (await ui.findAll({ type: surface === 'terminal' ? 'Button' : 'Markdown' })).map(row => row.key)
+    const rows = (await ui.findAll({ type: ROWS[surface] })).map(row => row.key)
 
     expect(rows).toEqual(['t4', 't1'])
 
-    await ui.press(toggleOf(surface, 't1'))
-    expect(await ui.find({ text: /Translate the README/ })).toBeDefined()
+    await pressRow(ui, surface, 't1')
+    expect(await ui.find({ text: /Translate the README/, ...(surface === 'desktop' && { in: 't1' }) })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /README translated, FAQ shortened/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /↳ “also make the FAQ shorter please”/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /↳ “ok danke”/ })).toBeDefined()
 
-    await ui.press(toggleOf(surface, 't1'))
+    await pressRow(ui, surface, 't1')
     await ui.unmount()
   }
 })
@@ -338,7 +362,7 @@ test('/history debug counts the drawings of the pane', async ($, on) => {
   await turn($, 't1', 'Write a changelog entry', 'Added the entry.')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press(toggleOf('desktop', 't1'))
+  await ui.pointer({ type: 'down', x: 3, y: 0, button: 'left', in: 't1' })
   await ui.unmount()
 
   const result = await $.command.run({

@@ -112,11 +112,14 @@ session (or `/reload-plugins` in a running one).
 
 `/history` runs at once, even while Claude is working.
 
-**Mouse:** in the terminal, click a task to expand or collapse it, and click
-*files changed* or *Prompt* to fold those out. In the desktop app and VS Code,
-click the `▸` / `▾` link in front of the row, and the *files changed* or
-*Prompt* link. These are links rather than buttons there because the desktop
-app's buttons flicker under the pointer; a click on one opens no browser.
+**Mouse:** in the terminal and the desktop app, click a task to expand or
+collapse it, and click *files changed* or *Prompt* to fold those out. In VS
+Code, click the `▸` / `▾` link in front of the row, and the *files changed* or
+*Prompt* link; a click on one opens no browser.
+
+The desktop app's own buttons flicker under the pointer, so there the mod draws
+its rows itself (`hooks/row.tsx`, a surface module) and handles the click. If
+that module cannot run, the pane falls back to the links.
 
 **Keyboard:** give the pane the keyboard with `ctrl+x` then `tab` (or a click).
 `Tab` walks the rows, `Enter` expands or collapses, the arrow keys scroll and
@@ -201,8 +204,9 @@ calls at all.
 hooks/hooks.json                 names the hooks module
 hooks/register.tsx               events, persistence, the pane
 hooks/logic.ts                   grouping, summaries, formatting (pure)
+hooks/row.tsx                    the desktop app's pane rows (a surface module)
 types/index.d.ts                 the task type and the mod's state contract
-tests/task-history.test.tsx      tests on the terminal and desktop surfaces
+tests/task-history.test.tsx      tests on the terminal, desktop and VS Code surfaces
 ```
 
 ```

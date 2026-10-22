@@ -3,6 +3,7 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import type { Task, TaskStatus } from '../types'
 import type { NotifyLevel } from './logic'
+import type { Part } from './row'
 import {
   addTask,
   applySummary,
@@ -83,6 +84,8 @@ let hasLoggedFailure = false
 const drawnAt: number[] = []
 let lastDrawing = ''
 const focusMoves: string[] = []
+// Surfaces where the pane's row module failed: they get links instead.
+const faulted = new Set<string>()
 let cwd = ''
 
 function paneTitle() {
@@ -312,6 +315,18 @@ async function gitChanges($: Engine, turnId: string): Promise<string[]> {
   return after === undefined || typeof root !== 'string'
     ? []
     : changedPaths(before.entries, after).map(path => `${root}/${path}`)
+}
+
+async function toggleRow($: Engine, key: string) {
+  await update($, expanded, keys => (keys.includes(key) ? keys.filter(one => one !== key) : [...keys, key]))
+}
+
+async function fillPrompt($: Engine, id: string) {
+  const task = (await read($, tasks)).find(one => one.id === id)
+
+  if (task !== undefined) {
+    await $.prompt.fill({ text: task.prompt })
+  }
 }
 
 async function refresh($: Engine) {
@@ -545,6 +560,27 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // A press on a row the row module drew: `insert:<id>` fills the prompt, any other key folds.
+  on('ui.message', async ($, e, next) => {
+    const data: unknown = e.data
+    const isPress = typeof data === 'object' && data !== null && 'press' in data && data.press === true
+
+    if (e.requestId === PANE && isPress) {
+      await (e.element.startsWith('insert:') ? fillPrompt($, e.element.slice(7)) : toggleRow($, e.element))
+    }
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('ui.fault', ($, e, next) => {
+    if (e.requestId === PANE && !faulted.has(e.surface)) {
+      faulted.add(e.surface)
+      $.ui.log(`task-history: rows on ${e.surface} fell back to links (${e.reason})`)
+    }
+
+    return next(e)
+  })
+
   on('ui.close', { id: PANE }, async ($, e, next) => {
     if (e.origin.kind === 'person') {
       wantsPane = false
@@ -568,7 +604,8 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Markdown, Text } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Button, Markdown, Text } = elements
     const list = await read($, tasks)
     const open = new Set(await read($, expanded))
     await read($, tick)
@@ -586,13 +623,19 @@ export const register: Register = (on, options) => {
       `${e.surface}, ${e.props.placement}, focused ${e.props.isFocused}, ` +
       `${e.props.bodyColumns} columns, ${scroll.bodyRows} rows, offset ${scroll.offset}`
 
-    const toggle = (key: string) => () =>
-      void update($, expanded, keys => (keys.includes(key) ? keys.filter(one => one !== key) : [...keys, key]))
+    const toggle = (key: string) => () => void toggleRow($, key)
+    const insert = (task: Task) => () => void fillPrompt($, task.id)
 
-    // The terminal makes a whole row one press. The desktop app's buttons
+    // The terminal makes a whole row one Button. The desktop app's buttons
     // flicker under the pointer, plain or not, though nothing is redrawn: there
-    // every press is a link the mod answers, which holds still.
+    // the row module (row.tsx) draws each row as text and posts its presses.
+    // Elsewhere (VS Code draws no Client, or the module failed) a press is a link.
     const isRowButton = e.surface === 'terminal'
+    const Client =
+      e.surface === 'desktop' && 'Client' in elements && !faulted.has(e.surface) ? elements.Client : undefined
+
+    const row = <T,>(key: string, parts: Part[], fallback: () => T) =>
+      Client ? <Client key={key} module="./row.tsx" props={{ parts }} width="100%" /> : fallback()
 
     const link = (key: string, label: string, onPress: () => void, isDim = false) => {
       const href = `https://task-history.invalid/${encodeURIComponent(key)}`
@@ -607,10 +650,10 @@ export const register: Register = (on, options) => {
           {label}
         </Button>
       ) : (
-        link(key, `${isOpen ? '▾' : '▸'} ${label}`, toggle(key), true)
+        row(key, [{ text: `${isOpen ? '▾' : '▸'} ${label}`, isDim: true }], () =>
+          link(key, `${isOpen ? '▾' : '▸'} ${label}`, toggle(key), true),
+        )
       )
-
-    const insert = (task: Task) => () => void $.prompt.fill({ text: task.prompt })
 
     if (list.length === 0) {
       return (
@@ -677,7 +720,9 @@ export const register: Register = (on, options) => {
               {isRowButton ? (
                 <Button key={`insert:${task.id}`} label="Insert into prompt" onPress={insert(task)} />
               ) : (
-                link(`insert:${task.id}`, 'Insert into prompt', insert(task))
+                row(`insert:${task.id}`, [{ text: '› Insert into prompt', isDim: true }], () =>
+                  link(`insert:${task.id}`, 'Insert into prompt', insert(task)),
+                )
               )}
             </Box>
           )}
@@ -707,16 +752,27 @@ export const register: Register = (on, options) => {
                   <Text dimColor>{when}</Text>
                 </Button>
               ) : (
-                <Box flexDirection="row" gap={1}>
-                  {link(task.id, isOpen ? '▾' : '▸', toggle(task.id))}
-                  <Text color={icon.color} bold>
-                    {icon.glyph}
-                  </Text>
-                  <Box flexGrow={1} flexShrink={1}>
-                    <Text wrap="truncate-end">{task.title}</Text>
-                  </Box>
-                  <Text dimColor>{when}</Text>
-                </Box>
+                row(
+                  task.id,
+                  [
+                    { text: isOpen ? '▾' : '▸' },
+                    { text: icon.glyph, color: icon.color, isBold: true },
+                    { text: task.title, isFill: true },
+                    { text: when, isDim: true },
+                  ],
+                  () => (
+                    <Box flexDirection="row" gap={1}>
+                      {link(task.id, isOpen ? '▾' : '▸', toggle(task.id))}
+                      <Text color={icon.color} bold>
+                        {icon.glyph}
+                      </Text>
+                      <Box flexGrow={1} flexShrink={1}>
+                        <Text wrap="truncate-end">{task.title}</Text>
+                      </Box>
+                      <Text dimColor>{when}</Text>
+                    </Box>
+                  ),
+                )
               )}
               {isOpen ? details(task) : glance(task)}
             </Box>
