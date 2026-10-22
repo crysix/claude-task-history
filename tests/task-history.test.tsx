@@ -81,6 +81,11 @@ function request(prompt: string): string {
   return prompt.replace(/<previous>[\s\S]*<\/previous>/, '')
 }
 
+/** A press on a toggle: the Button in the terminal, the link answering it elsewhere. */
+function toggleOf(surface: string, key: string) {
+  return surface === 'terminal' ? { key } : { key, link: { href: `https://task-history.invalid/${encodeURIComponent(key)}` } }
+}
+
 async function turn(
   $: Engine,
   turnId: string,
@@ -120,29 +125,29 @@ test('a task shows its summary, open question and files on every surface', async
       // The whole row is one press.
       expect((await ui.find({ key: 't1' }))?.text).toMatch(/\? Fix the login bug/)
     } else {
-      // A chevron is the press, the title plain text beside it.
-      expect((await ui.find({ key: 't1' }))?.text).toBe('▸')
+      // A chevron link is the press, the title plain text beside it.
+      expect((await ui.find({ key: 't1' }))?.type).toBe('Markdown')
       expect(await ui.find({ type: 'Text', text: /Fix the login bug/ })).toBeDefined()
     }
 
     expect(await ui.find({ type: 'Text', text: /Add a regression test\?/ })).toBeDefined()
 
-    await ui.press({ key: 't1' })
+    await ui.press(toggleOf(surface, 't1'))
     expect(await ui.find({ type: 'Text', text: /→ Session check fixed in login\.ts/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /waiting for you · 1m12s · 2 tools/ })).toBeDefined()
     expect(await ui.find({ text: /1 file changed/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'src/login.ts' })).toBeUndefined()
 
-    await ui.press({ key: 'files:t1' })
+    await ui.press(toggleOf(surface, 'files:t1'))
     expect(await ui.find({ type: 'Text', text: 'src/login.ts' })).toBeDefined()
 
-    await ui.press({ key: 'prompt:t1' })
+    await ui.press(toggleOf(surface, 'prompt:t1'))
     expect(await ui.find({ type: 'Text', text: /users get logged out/ })).toBeDefined()
 
     // Collapse again, so the next surface starts from the same place.
-    await ui.press({ key: 'files:t1' })
-    await ui.press({ key: 'prompt:t1' })
-    await ui.press({ key: 't1' })
+    await ui.press(toggleOf(surface, 'files:t1'))
+    await ui.press(toggleOf(surface, 'prompt:t1'))
+    await ui.press(toggleOf(surface, 't1'))
     await ui.unmount()
   }
 })
@@ -166,17 +171,17 @@ test('replies and follow-ups fold into the task they continue', async ($, on) =>
 
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    const rows = (await ui.findAll({ type: 'Button' })).map(row => row.key)
+    const rows = (await ui.findAll({ type: surface === 'terminal' ? 'Button' : 'Markdown' })).map(row => row.key)
 
     expect(rows).toEqual(['t4', 't1'])
 
-    await ui.press({ key: 't1' })
+    await ui.press(toggleOf(surface, 't1'))
     expect(await ui.find({ text: /Translate the README/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /README translated, FAQ shortened/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /↳ “also make the FAQ shorter please”/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /↳ “ok danke”/ })).toBeDefined()
 
-    await ui.press({ key: 't1' })
+    await ui.press(toggleOf(surface, 't1'))
     await ui.unmount()
   }
 })
@@ -333,7 +338,7 @@ test('/history debug counts the drawings of the pane', async ($, on) => {
   await turn($, 't1', 'Write a changelog entry', 'Added the entry.')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.press({ key: 't1' })
+  await ui.press(toggleOf('desktop', 't1'))
   await ui.unmount()
 
   const result = await $.command.run({
@@ -344,24 +349,4 @@ test('/history debug counts the drawings of the pane', async ($, on) => {
   })
   expect(result.text).toMatch(/Pane drawn [2-9]\d* times since load/)
   expect(result.text).toMatch(/Last drawing: desktop, dock, focused false, 44 columns/)
-})
-
-test('/history hovertest draws every variant and tells which was pressed', async ($, on) => {
-  engine(on, () => null)
-
-  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
-  await $.command.run({
-    command: 'history',
-    args: 'hovertest',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: true, columns: 160 },
-  })
-
-  const ui = await $.ui.mount({ ...PANE, requestId: 'task-history-hovertest', surface: 'desktop' })
-  expect((await ui.findAll({ type: 'Button' })).map(one => one.key)).toEqual(['a', 'b', 'c', 'd', 'close'])
-  expect(await ui.find({ key: 'e' })).toBeDefined()
-
-  await ui.press({ key: 'b' })
-  expect(await ui.find({ type: 'Text', text: /Last pressed: B/ })).toBeDefined()
-  await ui.unmount()
 })

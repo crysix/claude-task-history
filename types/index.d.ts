@@ -43,8 +43,6 @@ declare module 'claude-code' {
       expanded: string[]
       /** Bumped by a timer so ages and running times stay fresh. */
       tick: number
-      /** Which variant of `/history hovertest` was pressed last. */
-      hoverPressed: string
     }
   }
 }

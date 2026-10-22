@@ -109,13 +109,14 @@ session (or `/reload-plugins` in a running one).
 | `/history close` | Hide the pane                                  |
 | `/history clear` | Empty the history of the current session       |
 | `/history debug` | How often the pane was drawn, for bug reports  |
-| `/history hovertest` | A pane of pressable variants, to check hover on a surface |
 
 `/history` runs at once, even while Claude is working.
 
 **Mouse:** in the terminal, click a task to expand or collapse it, and click
 *files changed* or *Prompt* to fold those out. In the desktop app and VS Code,
-click the `▸` / `▾` arrow in front of the row.
+click the `▸` / `▾` link in front of the row, and the *files changed* or
+*Prompt* link. These are links rather than buttons there because the desktop
+app's buttons flicker under the pointer; a click on one opens no browser.
 
 **Keyboard:** give the pane the keyboard with `ctrl+x` then `tab` (or a click).
 `Tab` walks the rows, `Enter` expands or collapses, the arrow keys scroll and
