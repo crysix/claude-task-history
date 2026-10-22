@@ -29,6 +29,7 @@ import {
 } from './logic'
 
 const PANE = 'task-history'
+const HOVER_PANE = 'task-history-hovertest'
 const COMMAND = 'history'
 const SESSIONS_KEY = 'sessions'
 const OPEN_KEY = 'isOpen'
@@ -53,6 +54,7 @@ const activeId = atom({ plugin: 'task-history', key: 'activeId' } as const, null
 const sessionId = atom({ plugin: 'task-history', key: 'sessionId' } as const, '')
 const expanded = atom({ plugin: 'task-history', key: 'expanded' } as const, [])
 const tick = atom({ plugin: 'task-history', key: 'tick' } as const, 0)
+const hoverPressed = atom({ plugin: 'task-history', key: 'hoverPressed' } as const, '')
 
 type Engine = EngineInterface
 
@@ -495,6 +497,13 @@ export const register: Register = (on, options) => {
   on('command.run', { command: COMMAND }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
 
+    if (arg === 'hovertest') {
+      await update($, hoverPressed, () => '')
+      const opened = await $.ui.open({ id: HOVER_PANE, title: 'Hover test' })
+
+      return { text: opened.isPlaced ? 'Hover test opened.' : `Hover test waits: ${opened.reason}` }
+    }
+
     if (arg === 'debug') {
       const now = await $.clock.now()
       const recent = drawnAt.filter(at => now - at < 10000).length
@@ -717,6 +726,47 @@ export const register: Register = (on, options) => {
             </Box>
           )
         })}
+      </Box>
+    )
+  })
+
+  // `/history hovertest`: the pressables a surface draws, side by side, to see
+  // which of them hold still under the pointer.
+  on('ui.render', { component: 'Pane', requestId: HOVER_PANE }, async ($, e) => {
+    const { Box, Button, Markdown, Text } = $.ui.resolve(e)
+    const pressed = await read($, hoverPressed)
+    const press = (variant: string) => () => void update($, hoverPressed, () => variant)
+
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text>Hold the pointer over each arrow for a few seconds. Which ones flicker? Then click each once.</Text>
+        <Box flexDirection="row" gap={1}>
+          <Text>A plain button</Text>
+          <Button key="a" plain label="▸" onPress={press('A')} />
+        </Box>
+        <Box flexDirection="row" gap={1}>
+          <Text>B button</Text>
+          <Button key="b" label="▸" onPress={press('B')} />
+        </Box>
+        <Box flexDirection="row" gap={1}>
+          <Text>C plain dim button</Text>
+          <Button key="c" plain dimColor label="▸" onPress={press('C')} />
+        </Box>
+        <Box flexDirection="row" gap={1}>
+          <Text>D button with a word</Text>
+          <Button key="d" variant="secondary" label="Open" onPress={press('D')} />
+        </Box>
+        <Box flexDirection="row" gap={1}>
+          <Text>E link</Text>
+          <Markdown
+            key="e"
+            text="[▸ open](https://task-history.invalid/e)"
+            pressableLinks={['https://task-history.invalid/e']}
+            onLinkPress={press('E')}
+          />
+        </Box>
+        <Text dimColor>Last pressed: {pressed || 'none'}</Text>
+        <Button key="close" label="Close" onPress={() => void $.ui.close({ id: HOVER_PANE })} />
       </Box>
     )
   })

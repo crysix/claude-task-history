@@ -109,6 +109,7 @@ session (or `/reload-plugins` in a running one).
 | `/history close` | Hide the pane                                  |
 | `/history clear` | Empty the history of the current session       |
 | `/history debug` | How often the pane was drawn, for bug reports  |
+| `/history hovertest` | A pane of pressable variants, to check hover on a surface |
 
 `/history` runs at once, even while Claude is working.
 

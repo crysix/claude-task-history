@@ -345,3 +345,23 @@ test('/history debug counts the drawings of the pane', async ($, on) => {
   expect(result.text).toMatch(/Pane drawn [2-9]\d* times since load/)
   expect(result.text).toMatch(/Last drawing: desktop, dock, focused false, 44 columns/)
 })
+
+test('/history hovertest draws every variant and tells which was pressed', async ($, on) => {
+  engine(on, () => null)
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await $.command.run({
+    command: 'history',
+    args: 'hovertest',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 160 },
+  })
+
+  const ui = await $.ui.mount({ ...PANE, requestId: 'task-history-hovertest', surface: 'desktop' })
+  expect((await ui.findAll({ type: 'Button' })).map(one => one.key)).toEqual(['a', 'b', 'c', 'd', 'close'])
+  expect(await ui.find({ key: 'e' })).toBeDefined()
+
+  await ui.press({ key: 'b' })
+  expect(await ui.find({ type: 'Text', text: /Last pressed: B/ })).toBeDefined()
+  await ui.unmount()
+})
