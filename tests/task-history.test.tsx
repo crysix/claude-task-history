@@ -325,3 +325,23 @@ test('paths and git readings on Windows and POSIX', async () => {
   expect([...after.keys()]).toEqual(['a.ts', 'b.ts', 'c.ts'])
   expect(changedPaths(before, after)).toEqual(['a.ts', 'c.ts'])
 })
+
+test('/history debug counts the drawings of the pane', async ($, on) => {
+  engine(on, () => null)
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Write a changelog entry', 'Added the entry.')
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.press({ key: 't1' })
+  await ui.unmount()
+
+  const result = await $.command.run({
+    command: 'history',
+    args: 'debug',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 160 },
+  })
+  expect(result.text).toMatch(/Pane drawn [2-9]\d* times since load/)
+  expect(result.text).toMatch(/Last drawing: desktop, dock, focused false, 44 columns/)
+})

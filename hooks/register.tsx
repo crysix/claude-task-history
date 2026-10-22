@@ -79,6 +79,10 @@ let submitted: Submitted | undefined
 let wantsPane = true
 let hasAutoOpened = false
 let hasLoggedFailure = false
+// For `/history debug`: when the pane was drawn, with what, and what moved its focus.
+const drawnAt: number[] = []
+let lastDrawing = ''
+const focusMoves: string[] = []
 let cwd = ''
 
 function paneTitle() {
@@ -491,6 +495,19 @@ export const register: Register = (on, options) => {
   on('command.run', { command: COMMAND }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
 
+    if (arg === 'debug') {
+      const now = await $.clock.now()
+      const recent = drawnAt.filter(at => now - at < 10000).length
+
+      return {
+        text: [
+          `Pane drawn ${drawnAt.length} times since load, ${recent} in the last 10 s.`,
+          `Last drawing: ${lastDrawing || 'none'}`,
+          `Focus moves (${focusMoves.length}): ${focusMoves.slice(-8).join(', ') || 'none'}`,
+        ].join('\n'),
+      }
+    }
+
     if (arg === 'clear') {
       await update($, tasks, () => [])
       await update($, activeId, () => null)
@@ -517,6 +534,16 @@ export const register: Register = (on, options) => {
 
     return { text: opened.isPlaced ? 'Task history shown.' : `Task history is open, not drawn yet: ${opened.reason}` }
   })
+
+  on('ui.focus', { requestId: PANE }, ($, e, next) => {
+    focusMoves.push(`${e.element ?? 'engine mark'} by ${e.origin.kind}`)
+
+    if (focusMoves.length > 50) {
+      focusMoves.shift()
+    }
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   on('ui.close', { id: PANE }, async ($, e, next) => {
     if (e.origin.kind === 'person') {
@@ -547,6 +574,17 @@ export const register: Register = (on, options) => {
     await read($, tick)
     const now = await $.clock.now()
     const width = Math.max(24, e.props.bodyColumns)
+    const { scroll } = e.props
+
+    drawnAt.push(now)
+
+    if (drawnAt.length > 500) {
+      drawnAt.shift()
+    }
+
+    lastDrawing =
+      `${e.surface}, ${e.props.placement}, focused ${e.props.isFocused}, ` +
+      `${e.props.bodyColumns} columns, ${scroll.bodyRows} rows, offset ${scroll.offset}`
 
     const toggle = (key: string) => () =>
       void update($, expanded, keys => (keys.includes(key) ? keys.filter(one => one !== key) : [...keys, key]))
