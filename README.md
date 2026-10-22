@@ -42,9 +42,19 @@ by side) without scrolling back through the whole transcript.
   answers, or if it fails, the raw prompt and the reply's first line are shown.
 - **Insert a prompt again:** the expanded prompt has an *Insert into prompt*
   button that puts it back into the input box.
-- **Survives resumes.** The history is saved per session, so
-  `claude --resume` brings it back. A session that ran before the mod was on is
-  rebuilt from its transcript (raw text, no summaries).
+- **Notifications.** When a task that ran for 20 seconds or more ends, a
+  desktop notification says so: `? <question>` when Claude waits for you,
+  `✓ <title> – <result>` when it is done. Handy when several sessions run side
+  by side.
+- **Status line.** The running or waiting task also shows in the status line
+  (`⟳ Fix the login bug · 1m12s`), so it stays visible with the pane closed.
+- **All changed files.** Besides `Edit`, `Write` and `NotebookEdit`, the mod
+  compares `git status` before and after each turn, so files changed by shell
+  commands (`sed`, `mv`, a formatter, a generator) are listed too.
+- **Survives resumes and reloads.** The history is saved per session, so
+  `claude --resume` brings it back. A summary cut off by a reload or update is
+  asked for again. A session that ran before the mod was on is rebuilt from its
+  transcript (raw text, no summaries).
 
 ## Requirements
 
@@ -77,7 +87,16 @@ claude plugin install task-history --marketplace crysix/claude-task-history
 In the desktop app, where `/plugin` does not run: click **+** next to the
 prompt box, then **Plugins**, **Add marketplace** with
 `crysix/claude-task-history`, then **Add plugin**. A mod installed from a
-terminal at the user scope loads in the desktop app's local sessions too.
+terminal at the user scope loads in the desktop app's local sessions too, as
+long as both use the same Claude Code configuration.
+
+**Windows with WSL:** Claude Code in WSL and the desktop app on Windows keep
+separate configurations (`~/.claude` in WSL, `%USERPROFILE%\.claude` on
+Windows). Install the mod on each side you use: with `/plugin install` in a WSL
+terminal, and through **+ › Plugins** in the desktop app.
+
+**Updating:** `claude plugin update task-history@claude-task-history`, then
+`/reload-plugins` in a running session.
 
 ## Usage
 
@@ -110,7 +129,7 @@ screen.
 | `prompt.submit` | Remembers what you typed, slash commands as typed (`/review 42`)                   |
 | `turn.start`    | Starts a new task, or adds a follow-up to the last task                            |
 | `tool.call`     | Counts tool calls and collects the files `Edit`, `Write` and `NotebookEdit` changed |
-| `turn.complete` | Records duration and status, then asks for the summary                            |
+| `turn.complete` | Records duration, status and the files `git status` shows as changed, then asks for the summary |
 
 **What counts as a new task.** Every prompt you send starts a turn. A turn is
 added to the last task as a follow-up when:
@@ -137,9 +156,15 @@ are kept up to 4,000 characters.
 | -------------- | ------- | ----------------------------------------------------------------------- |
 | `summaries`    | `true`  | Summarize finished tasks with a model. `false`: raw text, no model calls |
 | `summaryModel` | `haiku` | The model alias or id used for summaries                                 |
+| `notify`       | `all`   | Notifications for tasks of 20 s or more: `all`, `waiting` (only when Claude asks you something), `off` |
+| `statusLine`   | `true`  | Show the running or waiting task in the status line                      |
+| `gitFiles`     | `true`  | Find changed files through `git status` before and after each turn       |
 
 You set these when you install the mod, or later in `/config`. They are stored
 in your `settings.json` under `pluginConfigs`.
+
+Claude Code has notifications of its own (when it waits for your input). If you
+get two, set `notify` to `off` or `waiting`.
 
 ## Cost and privacy
 
@@ -154,8 +179,10 @@ calls at all.
 ## Limitations
 
 - Only the current session is shown, not other sessions running in parallel.
-- Files changed through shell commands (`sed`, `mv`, a formatter run by `Bash`)
-  are not listed, only those changed with `Edit`, `Write` and `NotebookEdit`.
+- Changed files through git work only inside a git repository. There, a file
+  that was already modified before the turn and is changed again by a shell
+  command is not detected, and files you edit yourself while Claude works are
+  counted towards the task.
 - Times are relative (`12m`, `3h`), not clock times.
 - Grouping by the model can be wrong now and then. A wrongly merged task still
   shows its prompt as a `↳` line under the task it was merged into.

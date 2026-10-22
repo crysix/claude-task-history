@@ -74,6 +74,7 @@ export function newTask(id: string, prompt: string, now: number, needsGrouping: 
     followUps: [],
     isSummarized: false,
     needsGrouping,
+    pendingAnswer: null,
   }
 }
 
@@ -122,10 +123,16 @@ export function formatAge(ms: number): string {
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`
 }
 
+/** A path below `cwd` as relative, on Windows (`C:\x\y`) as on POSIX; any other as it is. */
 export function relativePath(path: string, cwd: string): string {
-  const root = cwd.endsWith('/') ? cwd : `${cwd}/`
+  const file = path.replace(/\\/g, '/')
+  const base = cwd.replace(/\\/g, '/').replace(/\/+$/, '')
+  const isWindows = /^[a-z]:\//i.test(base)
+  const isBelow = isWindows
+    ? file.toLowerCase().startsWith(`${base.toLowerCase()}/`)
+    : file.startsWith(`${base}/`)
 
-  return path.startsWith(root) ? path.slice(root.length) : path
+  return isBelow ? file.slice(base.length + 1) : file
 }
 
 export function projectName(cwd: string): string {
@@ -145,7 +152,7 @@ export const SUMMARY_SYSTEM =
   'Reply with one JSON object and nothing else.'
 
 /** Keeps a long text's head and tail, where a request and a reply say the most. */
-function excerpt(text: string, head: number, tail: number): string {
+export function excerpt(text: string, head: number, tail: number): string {
   return text.length <= head + tail ? text : `${text.slice(0, head)}\n[…]\n${text.slice(-tail)}`
 }
 
@@ -165,18 +172,21 @@ export function summaryPrompt(task: Task, answer: string, previous: Task | undef
     parts.push(`What the person said on this task afterwards, in order:\n<followups>\n${replies}\n</followups>`)
   }
 
-  if (task.isSummarized && task.result) {
-    parts.push(`The result so far: ${task.result}`)
+  if (task.result) {
+    parts.push(`The result of this task so far: ${task.result}`)
   }
 
   parts.push(`The assistant's latest reply:\n<reply>\n${excerpt(answer, 1500, 2500)}\n</reply>`)
 
   const fields = [
     previous !== undefined
-      ? '- "isFollowUp": true when the request only continues, answers, confirms or corrects the task before instead of starting a new one'
+      ? '- "isFollowUp": true only when the request answers a question of the task before, confirms, corrects or ' +
+        'refines its result, or asks to go on with it; false when it asks for a different result or action, even ' +
+        'on the same project (a release after a license, tests after a fix)'
       : '- "isFollowUp": false',
     '- "title": the whole task in at most 6 words, no trailing period',
-    '- "result": what was done or found so far, in at most 20 words; if nothing was done yet, what the assistant waits for',
+    '- "result": what the whole task achieved so far, in at most 20 words, keeping what the result so far says ' +
+      'unless the latest reply changes it; if nothing was done yet, what the assistant waits for',
     '- "openPoints": up to 3 short questions or proposed next steps the reply leaves to the person, else []',
     '- "isWaitingForUser": true when the reply ends by asking the person a question or for a decision',
   ]
@@ -258,6 +268,8 @@ export function applySummary(
   if (task.needsGrouping && summary.isFollowUp && previous !== undefined) {
     const merged: Task = {
       ...previous,
+      title: previous.isSummarized ? previous.title : summary.title,
+      pendingAnswer: null,
       followUps: [...previous.followUps, { text: task.prompt, at: task.startedAt }, ...task.followUps],
       durationMs: previous.durationMs + task.durationMs,
       tools: previous.tools + task.tools,
@@ -284,6 +296,7 @@ export function applySummary(
       status: settledStatus(one.status, summary),
       isSummarized: true,
       needsGrouping: false,
+      pendingAnswer: null,
     })),
   }
 }
@@ -355,4 +368,69 @@ export function tasksFromMessages(messages: readonly SessionMessage[], now: numb
   close()
 
   return tasks.slice(-MAX_TASKS)
+}
+
+/** `git status --porcelain=v1 -z` as path to its two-letter code; a rename's old path is skipped. */
+export function parseGitStatus(stdout: string): Map<string, string> {
+  const entries = new Map<string, string>()
+  const fields = stdout.split('\0')
+
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index] ?? ''
+
+    if (field.length < 4) {
+      continue
+    }
+
+    const code = field.slice(0, 2)
+    entries.set(field.slice(3), code)
+
+    if (code.includes('R') || code.includes('C')) {
+      index += 1
+    }
+  }
+
+  return entries
+}
+
+/** The paths whose state differs between two `git status` readings: what the turn touched. */
+export function changedPaths(before: ReadonlyMap<string, string>, after: ReadonlyMap<string, string>): string[] {
+  const changed = [...after].filter(([path, code]) => before.get(path) !== code).map(([path]) => path)
+  const reverted = [...before.keys()].filter(path => !after.has(path))
+
+  return [...changed, ...reverted]
+}
+
+export type NotifyLevel = 'all' | 'waiting' | 'off'
+
+/** The text of the notification a finished task raises, or undefined for none. */
+export function notification(task: Task, level: NotifyLevel): string | undefined {
+  if (level === 'off' || task.status === 'running' || task.status === 'aborted') {
+    return undefined
+  }
+
+  if (task.status === 'waiting') {
+    return `? ${task.openPoints[0] ?? task.title}`
+  }
+
+  if (level !== 'all') {
+    return undefined
+  }
+
+  return task.status === 'error' ? `✗ ${task.title}: failed` : `✓ ${task.title}${task.result ? ` – ${task.result}` : ''}`
+}
+
+/** The status line entry for the task in front: running or waiting; undefined clears it. */
+export function statusText(task: Task | undefined, now: number): string | undefined {
+  if (task?.status === 'running') {
+    const elapsed = task.durationMs + (task.runningSince === null ? 0 : now - task.runningSince)
+
+    return `⟳ ${cut(task.title, 40)} · ${formatDuration(elapsed)}`
+  }
+
+  if (task?.status === 'waiting') {
+    return `? ${cut(task.title, 40)}`
+  }
+
+  return undefined
 }

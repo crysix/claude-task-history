@@ -27,6 +27,8 @@ export type Task = {
   isSummarized: boolean
   /** True until the summary has said whether the task merely continues the one before. */
   needsGrouping: boolean
+  /** The reply a summary is still owed for, kept so a reload can catch up; null once done. */
+  pendingAnswer?: string | null
 }
 
 declare module 'claude-code' {

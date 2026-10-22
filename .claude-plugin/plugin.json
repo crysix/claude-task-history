@@ -1,12 +1,21 @@
 {
   "name": "task-history",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "A collapsible task history of the current session in a side pane: each prompt, its result, open questions, files and duration.",
-  "author": { "name": "crysix", "url": "https://github.com/crysix" },
+  "author": {
+    "name": "crysix",
+    "url": "https://github.com/crysix"
+  },
   "homepage": "https://github.com/crysix/claude-task-history",
   "repository": "https://github.com/crysix/claude-task-history",
   "license": "MIT",
-  "keywords": ["mod", "pane", "history", "tasks", "sidebar"],
+  "keywords": [
+    "mod",
+    "pane",
+    "history",
+    "tasks",
+    "sidebar"
+  ],
   "types": "./types/index.d.ts",
   "userConfig": {
     "summaries": {
@@ -20,6 +29,29 @@
       "title": "Summary model",
       "description": "The model alias or id used for summaries.",
       "default": "haiku"
+    },
+    "notify": {
+      "type": "string",
+      "title": "Notifications",
+      "description": "Raise a desktop notification when a task that ran for 20 seconds or more ends: all (done, waiting, failed), waiting (only when Claude asks you something), off.",
+      "default": "all",
+      "options": [
+        "all",
+        "waiting",
+        "off"
+      ]
+    },
+    "statusLine": {
+      "type": "boolean",
+      "title": "Status line",
+      "description": "Show the running or waiting task in the status line, so it is visible with the pane closed.",
+      "default": true
+    },
+    "gitFiles": {
+      "type": "boolean",
+      "title": "Files from git",
+      "description": "Compare git status before and after each turn, so files changed by shell commands are listed too.",
+      "default": true
     }
   }
 }
