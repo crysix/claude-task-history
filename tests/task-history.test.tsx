@@ -116,13 +116,21 @@ test('a task shows its summary, open question and files on every surface', async
   for (const surface of SURFACES) {
     const ui = await $.ui.mount({ ...PANE, surface })
 
-    expect((await ui.find({ key: 't1' }))?.text).toMatch(/\? Fix the login bug/)
+    if (surface === 'terminal') {
+      // The whole row is one press.
+      expect((await ui.find({ key: 't1' }))?.text).toMatch(/\? Fix the login bug/)
+    } else {
+      // A chevron is the press, the title plain text beside it.
+      expect((await ui.find({ key: 't1' }))?.text).toBe('▸')
+      expect(await ui.find({ type: 'Text', text: /Fix the login bug/ })).toBeDefined()
+    }
+
     expect(await ui.find({ type: 'Text', text: /Add a regression test\?/ })).toBeDefined()
 
     await ui.press({ key: 't1' })
     expect(await ui.find({ type: 'Text', text: /→ Session check fixed in login\.ts/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /waiting for you · 1m12s · 2 tools/ })).toBeDefined()
-    expect((await ui.find({ key: 'files:t1' }))?.text).toMatch(/1 file changed/)
+    expect(await ui.find({ text: /1 file changed/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'src/login.ts' })).toBeUndefined()
 
     await ui.press({ key: 'files:t1' })
@@ -163,7 +171,7 @@ test('replies and follow-ups fold into the task they continue', async ($, on) =>
     expect(rows).toEqual(['t4', 't1'])
 
     await ui.press({ key: 't1' })
-    expect((await ui.find({ key: 't1' }))?.text).toMatch(/Translate the README/)
+    expect(await ui.find({ text: /Translate the README/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /README translated, FAQ shortened/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /↳ “also make the FAQ shorter please”/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /↳ “ok danke”/ })).toBeDefined()

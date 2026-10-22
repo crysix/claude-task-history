@@ -551,6 +551,24 @@ export const register: Register = (on, options) => {
     const toggle = (key: string) => () =>
       void update($, expanded, keys => (keys.includes(key) ? keys.filter(one => one !== key) : [...keys, key]))
 
+    // The terminal makes a whole row one press. Elsewhere a Button is a native
+    // button, which reflowed a full row under the pointer on hover (flicker):
+    // there only a chevron is pressable, beside plain text.
+    const isRowButton = e.surface === 'terminal'
+
+    const fold = (key: string, isOpen: boolean, label: string) =>
+      isRowButton ? (
+        <Button key={key} plain dimColor onPress={toggle(key)}>
+          {isOpen ? '▾ ' : '▸ '}
+          {label}
+        </Button>
+      ) : (
+        <Box flexDirection="row" gap={1}>
+          <Button key={key} plain dimColor label={isOpen ? '▾' : '▸'} onPress={toggle(key)} />
+          <Text dimColor>{label}</Text>
+        </Box>
+      )
+
     if (list.length === 0) {
       return (
         <Box flexDirection="column">
@@ -601,12 +619,7 @@ export const register: Register = (on, options) => {
           <Text dimColor>
             {icon.word} · {time} · {task.tools} tools
           </Text>
-          {task.files.length > 0 && (
-            <Button key={filesKey} plain dimColor onPress={toggle(filesKey)}>
-              {filesOpen ? '▾ ' : '▸ '}
-              {fileCount}
-            </Button>
-          )}
+          {task.files.length > 0 && fold(filesKey, filesOpen, fileCount)}
           {filesOpen && (
             <Box flexDirection="column" paddingLeft={2}>
               {task.files.map(file => (
@@ -614,10 +627,7 @@ export const register: Register = (on, options) => {
               ))}
             </Box>
           )}
-          <Button key={promptKey} plain dimColor onPress={toggle(promptKey)}>
-            {promptOpen ? '▾ ' : '▸ '}
-            Prompt
-          </Button>
+          {fold(promptKey, promptOpen, 'Prompt')}
           {promptOpen && (
             <Box flexDirection="column" paddingLeft={2}>
               <Text>{cut(task.prompt, 2000)}</Text>
@@ -644,14 +654,27 @@ export const register: Register = (on, options) => {
 
           return (
             <Box flexDirection="column">
-              <Button key={task.id} plain onPress={toggle(task.id)}>
-                {isOpen ? '▾ ' : '▸ '}
-                <Text color={icon.color} bold>
-                  {icon.glyph}
-                </Text>
-                {` ${cut(task.title, width - when.length - 6)} `}
-                <Text dimColor>{when}</Text>
-              </Button>
+              {isRowButton ? (
+                <Button key={task.id} plain onPress={toggle(task.id)}>
+                  {isOpen ? '▾ ' : '▸ '}
+                  <Text color={icon.color} bold>
+                    {icon.glyph}
+                  </Text>
+                  {` ${cut(task.title, width - when.length - 6)} `}
+                  <Text dimColor>{when}</Text>
+                </Button>
+              ) : (
+                <Box flexDirection="row" gap={1}>
+                  <Button key={task.id} plain label={isOpen ? '▾' : '▸'} onPress={toggle(task.id)} />
+                  <Text color={icon.color} bold>
+                    {icon.glyph}
+                  </Text>
+                  <Box flexGrow={1} flexShrink={1}>
+                    <Text wrap="truncate-end">{task.title}</Text>
+                  </Box>
+                  <Text dimColor>{when}</Text>
+                </Box>
+              )}
               {isOpen ? details(task) : glance(task)}
             </Box>
           )

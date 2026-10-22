@@ -109,8 +109,9 @@ terminal, and through **+ › Plugins** in the desktop app.
 
 `/history` runs at once, even while Claude is working.
 
-**Mouse:** click a task to expand or collapse it, and click *files changed* or
-*Prompt* to fold those out.
+**Mouse:** in the terminal, click a task to expand or collapse it, and click
+*files changed* or *Prompt* to fold those out. In the desktop app and VS Code,
+click the `▸` / `▾` arrow in front of the row.
 
 **Keyboard:** give the pane the keyboard with `ctrl+x` then `tab` (or a click).
 `Tab` walks the rows, `Enter` expands or collapses, the arrow keys scroll and
