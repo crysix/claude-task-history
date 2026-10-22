@@ -90,13 +90,15 @@ prompt box, then **Plugins**, **Add marketplace** with
 terminal at the user scope loads in the desktop app's local sessions too, as
 long as both use the same Claude Code configuration.
 
-**Windows with WSL:** Claude Code in WSL and the desktop app on Windows keep
-separate configurations (`~/.claude` in WSL, `%USERPROFILE%\.claude` on
-Windows). Install the mod on each side you use: with `/plugin install` in a WSL
-terminal, and through **+ › Plugins** in the desktop app.
+**Which machine counts:** a session loads the plugins of the machine it runs
+on. When the desktop app runs its sessions in WSL or on a remote host over SSH,
+install the mod there (with `/plugin install` in a terminal on that machine);
+the desktop app's own plugin settings do not list it. A session the app runs
+natively on Windows or macOS uses that system's Claude Code configuration.
 
-**Updating:** `claude plugin update task-history@claude-task-history`, then
-`/reload-plugins` in a running session.
+**Updating:** on the machine the sessions run on,
+`claude plugin update task-history@claude-task-history`, then start a new
+session (or `/reload-plugins` in a running one).
 
 ## Usage
 
