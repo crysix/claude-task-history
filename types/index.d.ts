@@ -13,6 +13,10 @@ export type Task = {
   result: string
   /** Questions or next steps the last reply left to the person. */
   openPoints: string[]
+  /** Questions the task waited on that the person has answered since: shown checked off. */
+  answered?: string[]
+  /** True once the person replied to the latest answer: a summary that comes after finds its questions answered. */
+  isReplied?: boolean
   status: TaskStatus
   startedAt: number
   /** When the turn running now began; null while no turn runs on the task. */

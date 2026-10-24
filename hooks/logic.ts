@@ -4,6 +4,7 @@ import type { Task, TaskStatus } from '../types'
 
 export const MAX_TASKS = 100
 const MAX_PROMPT = 4000
+const MAX_ANSWERED = 6
 
 /** Replies that only answer or confirm the task before: never a task of their own. */
 const ACKS = new Set([
@@ -65,6 +66,8 @@ export function newTask(id: string, prompt: string, now: number, needsGrouping: 
     title: fallbackTitle(prompt),
     result: '',
     openPoints: [],
+    answered: [],
+    isReplied: false,
     status: 'running',
     startedAt: now,
     runningSince: now,
@@ -84,6 +87,25 @@ export function addTask(list: readonly Task[], task: Task): Task[] {
 
 export function patch(list: readonly Task[], id: string, change: (task: Task) => Task): Task[] {
   return list.map(task => (task.id === id ? change(task) : task))
+}
+
+function addAnswered(answered: readonly string[] | undefined, points: readonly string[]): string[] {
+  return [...new Set([...(answered ?? []), ...points])].slice(-MAX_ANSWERED)
+}
+
+/** The person replied to the task: the questions it waited on count as answered. */
+export function markReplied(task: Task): Task {
+  if (task.status !== 'waiting') {
+    return { ...task, isReplied: true }
+  }
+
+  return {
+    ...task,
+    status: 'done',
+    openPoints: [],
+    answered: addAnswered(task.answered, task.openPoints),
+    isReplied: true,
+  }
 }
 
 export function formatDuration(ms: number): string {
@@ -160,8 +182,11 @@ export function summaryPrompt(task: Task, answer: string, previous: Task | undef
   const parts: string[] = []
 
   if (previous !== undefined) {
+    const asked = [...(previous.answered ?? []), ...previous.openPoints].slice(-3)
+    const points = asked.length > 0 ? `\nasked or proposed to the person: ${asked.join(' | ')}` : ''
+
     parts.push(
-      `The task before this one:\n<previous>\ntitle: ${previous.title}\nresult: ${previous.result}\n</previous>`,
+      `The task before this one:\n<previous>\ntitle: ${previous.title}\nresult: ${previous.result}${points}\n</previous>`,
     )
   }
 
@@ -180,9 +205,10 @@ export function summaryPrompt(task: Task, answer: string, previous: Task | undef
 
   const fields = [
     previous !== undefined
-      ? '- "isFollowUp": true only when the request answers a question of the task before, confirms, corrects or ' +
-        'refines its result, or asks to go on with it; false when it asks for a different result or action, even ' +
-        'on the same project (a release after a license, tests after a fix)'
+      ? '- "isFollowUp": true only when the request answers a question of the task before or takes up what it ' +
+        'proposed, confirms, corrects or refines its result, or asks to go on with it; false when it asks for a ' +
+        'different result or action the task before did not propose, even on the same project (a release after a ' +
+        'license, tests after a fix)'
       : '- "isFollowUp": false',
     '- "title": the whole task in at most 6 words, no trailing period',
     '- "result": what the whole task achieved so far, in at most 20 words, keeping what the result so far says ' +
@@ -238,12 +264,23 @@ export function parseSummary(text: string): Summary | undefined {
   }
 }
 
-function settledStatus(status: TaskStatus, summary: Summary): TaskStatus {
+function settledStatus(status: TaskStatus, isWaiting: boolean): TaskStatus {
   if (status === 'done' || status === 'waiting') {
-    return summary.isWaitingForUser ? 'waiting' : 'done'
+    return isWaiting ? 'waiting' : 'done'
   }
 
   return status
+}
+
+/** A summary's points and status for its task; questions the person replied to before it came are answered. */
+function settle(task: Task, summary: Summary): { status: TaskStatus; openPoints: string[]; answered: string[] } {
+  const isAnswered = summary.isWaitingForUser && task.isReplied === true
+
+  return {
+    status: settledStatus(task.status, summary.isWaitingForUser && !isAnswered),
+    openPoints: isAnswered ? [] : summary.openPoints,
+    answered: isAnswered ? summary.openPoints : [],
+  }
 }
 
 /**
@@ -264,6 +301,7 @@ export function applySummary(
   }
 
   const previous = index > 0 ? list[index - 1] : undefined
+  const settled = settle(task, summary)
 
   if (task.needsGrouping && summary.isFollowUp && previous !== undefined) {
     const merged: Task = {
@@ -274,10 +312,12 @@ export function applySummary(
       durationMs: previous.durationMs + task.durationMs,
       tools: previous.tools + task.tools,
       files: [...new Set([...previous.files, ...task.files])],
-      status: settledStatus(task.status, summary),
+      status: settled.status,
       runningSince: task.runningSince,
       result: summary.result || previous.result,
-      openPoints: summary.openPoints,
+      openPoints: settled.openPoints,
+      answered: addAnswered(previous.answered, [...(task.answered ?? []), ...settled.answered]),
+      isReplied: task.isReplied,
       isSummarized: true,
     }
 
@@ -292,8 +332,9 @@ export function applySummary(
       ...one,
       title: summary.title,
       result: summary.result || one.result,
-      openPoints: summary.openPoints,
-      status: settledStatus(one.status, summary),
+      openPoints: settled.openPoints,
+      answered: addAnswered(one.answered, settled.answered),
+      status: settled.status,
       isSummarized: true,
       needsGrouping: false,
       pendingAnswer: null,

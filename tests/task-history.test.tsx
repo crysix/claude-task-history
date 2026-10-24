@@ -374,3 +374,101 @@ test('/history debug counts the drawings of the pane', async ($, on) => {
   expect(result.text).toMatch(/Pane drawn [2-9]\d* times since load/)
   expect(result.text).toMatch(/Last drawing: desktop, dock, focused false, 44 columns/)
 })
+
+const ASKS = {
+  title: 'Fix the login bug',
+  result: 'Session check fixed',
+  openPoints: ['Add a regression test?'],
+  isWaitingForUser: true,
+}
+
+test('an answer that becomes a task of its own still checks the question off', async ($, on) => {
+  const prompts: string[] = []
+  const { clock } = engine(on, prompt => {
+    prompts.push(prompt)
+
+    return request(prompt).includes('Vitest')
+      ? { isFollowUp: false, title: 'Add a regression test', result: 'Test added' }
+      : ASKS
+  })
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Fix the login bug', 'Fixed the session check. Should I add a regression test?')
+  await clock.advance(10)
+  await turn($, 't2', 'Ja, bitte einen Regressionstest mit Vitest schreiben', 'Added the test.')
+  await clock.advance(10)
+
+  // The summary model sees what the task before asked, so it can tell an answer.
+  expect(prompts.at(-1)).toMatch(/<previous>[\s\S]*Add a regression test\?[\s\S]*<\/previous>/)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ key: 't1' }))?.text).toMatch(/✓ Fix the login bug/)
+  expect(await ui.find({ type: 'Text', text: /Add a regression test\?/ })).toBeUndefined()
+
+  await ui.press({ key: 't1' })
+  expect(await ui.find({ type: 'Text', text: /✓ Add a regression test\?/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\? Add a regression test\?/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('without a summary an answered task stops waiting', async ($, on) => {
+  const { clock } = engine(on, () => null)
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Fix the login bug', 'Fixed. Should I add a regression test?')
+  await clock.advance(10)
+  await $.turn.start({ text: 'Ja, bitte einen Regressionstest mit Vitest schreiben', turnId: 't2' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ key: 't1' }))?.text).toMatch(/✓ Fix the login bug/)
+  await ui.unmount()
+})
+
+test('an answer sent before the summary arrives checks its question off', async ($, on) => {
+  const { clock, notices } = engine(on, prompt =>
+    request(prompt).includes('Vitest') ? { isFollowUp: true, title: 'Fix the login bug', result: 'Fixed, test added' } : ASKS,
+  )
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Fix the login bug', 'Fixed. Should I add a regression test?', 45000)
+  await $.turn.start({ text: 'Ja, bitte einen Regressionstest mit Vitest schreiben', turnId: 't2' })
+  await clock.advance(10)
+
+  // The person is at the keyboard already: no notification about the question.
+  expect(notices).toEqual([])
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect((await ui.find({ key: 't1' }))?.text).toMatch(/✓ Fix the login bug/)
+  expect(await ui.find({ type: 'Text', text: /Add a regression test\?/ })).toBeUndefined()
+
+  await $.turn.complete({ answer: 'Added the test.', durationMs: 1000, isAborted: false, turnId: 't2', reason: 'answer' })
+  await clock.advance(10)
+
+  expect((await ui.findAll({ type: 'Button' })).map(row => row.key)).toEqual(['t1'])
+  await ui.press({ key: 't1' })
+  expect(await ui.find({ type: 'Text', text: /✓ Add a regression test\?/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /↳ “Ja, bitte einen Regressionstest/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a short answer checks the question off while the task goes on', async ($, on) => {
+  const { clock } = engine(on, prompt =>
+    prompt.includes('<followups>') ? { title: 'Fix the login bug', result: 'Fixed, test added' } : ASKS,
+  )
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Fix the login bug', 'Fixed. Should I add a regression test?')
+  await clock.advance(10)
+  await $.turn.start({ text: 'ja', turnId: 't2' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 't1' })
+  expect(await ui.find({ type: 'Text', text: /✓ Add a regression test\?/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\? Add a regression test\?/ })).toBeUndefined()
+
+  await $.turn.complete({ answer: 'Added the test.', durationMs: 1000, isAborted: false, turnId: 't2', reason: 'answer' })
+  await clock.advance(10)
+  expect((await ui.find({ key: 't1' }))?.text).toMatch(/✓ Fix the login bug/)
+  expect(await ui.find({ type: 'Text', text: /✓ Add a regression test\?/ })).toBeDefined()
+  await ui.unmount()
+})

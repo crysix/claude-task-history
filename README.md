@@ -33,6 +33,10 @@ by side) without scrolling back through the whole transcript.
 - **Status at a glance:** `⟳` running, `✓` done, `?` Claude ended with a
   question and waits for you, `✗` interrupted or failed. A waiting task shows
   its open question even when collapsed.
+- **Answered questions are checked off.** The next prompt you send answers
+  what a waiting task asked: the task turns `✓` at once, and its details keep
+  the question as `✓ <question>`. This holds when your answer becomes a task
+  of its own, and without summaries too.
 - **Follow-ups are grouped.** Short replies (“yes”, “ok, go on”, “B”) and
   corrections to the same task are listed under that task as `↳` lines instead
   of becoming tasks of their own.

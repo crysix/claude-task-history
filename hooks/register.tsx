@@ -14,6 +14,7 @@ import {
   formatAge,
   formatDuration,
   isAck,
+  markReplied,
   newTask,
   normalize,
   notification,
@@ -154,9 +155,9 @@ async function syncSession($: Engine) {
   await updateStatus($)
 }
 
-async function resumeTask($: Engine, id: string, now: number) {
+async function resumeTask($: Engine, id: string, now: number, isReply: boolean) {
   await update($, tasks, list =>
-    patch(list, id, task => ({ ...task, status: 'running', runningSince: now })),
+    patch(list, id, task => ({ ...(isReply ? markReplied(task) : task), status: 'running', runningSince: now })),
   )
   await update($, activeId, () => id)
 }
@@ -258,7 +259,8 @@ async function notify($: Engine, id: string, turnMs: number) {
   }
 
   const task = (await read($, tasks)).find(one => one.id === id)
-  const text = task === undefined ? undefined : notification(task, notifyLevel)
+  // A task the person replied to already needs no notification: they have seen it.
+  const text = task === undefined || task.isReplied === true ? undefined : notification(task, notifyLevel)
 
   if (text !== undefined) {
     await $.ui.notify(text, { title: `Claude · ${projectName(cwd)}` })
@@ -422,17 +424,19 @@ export const register: Register = (on, options) => {
         : undefined
     const last = (await read($, tasks)).at(-1)
     const text = matched?.text ?? e.text
+    // Whatever the person sends next answers what the task in front waits on.
+    const isReply = matched?.isPrompt !== false
 
-    if (folded.delete(typed) || typed === '' || matched?.isPrompt === false) {
+    if (folded.delete(typed) || typed === '' || !isReply) {
       if (last !== undefined) {
-        await resumeTask($, last.id, now)
+        await resumeTask($, last.id, now, isReply)
       }
     } else if (last !== undefined && isAck(text)) {
       await addFollowUp($, last.id, text, now)
-      await resumeTask($, last.id, now)
+      await resumeTask($, last.id, now, true)
     } else {
       const task = newTask(e.turnId, text, now, last !== undefined)
-      await update($, tasks, list => addTask(list, task))
+      await update($, tasks, list => addTask(last === undefined ? list : patch(list, last.id, markReplied), task))
       await update($, activeId, () => task.id)
     }
 
@@ -490,6 +494,7 @@ export const register: Register = (on, options) => {
         durationMs: task.durationMs + e.durationMs,
         result: isSummarizing && task.isSummarized ? task.result : line || task.result,
         files: [...new Set([...task.files, ...touched])],
+        isReplied: false,
         pendingAnswer: isOwed ? excerpt(e.answer, 1500, 2500) : null,
       })),
     )
@@ -699,6 +704,9 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column" paddingLeft={4}>
           {task.result.length > 0 && <Text>→ {task.result}</Text>}
+          {(task.answered ?? []).map(point => (
+            <Text dimColor>✓ {point}</Text>
+          ))}
           {task.openPoints.map(point => (
             <Text color="warning">? {point}</Text>
           ))}
