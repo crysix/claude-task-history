@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, Mounted } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, SessionAppendInput, SessionMessage } from 'claude-code'
 
 import { changedPaths, parseGitStatus, relativePath } from '../hooks/logic'
 
@@ -23,22 +23,47 @@ const SURFACES = ['terminal', 'desktop', 'vscode'] as const
 /** What a press on a row is on each surface: a Button, a row module's click, an answered link. */
 const ROWS = { terminal: 'Button', desktop: 'Client', vscode: 'Markdown' } as const
 
-type Reply = { isFollowUp?: boolean; title: string; result: string; openPoints?: string[]; isWaitingForUser?: boolean }
+type Point = string | { text: string; prompt: string }
+
+type Reply = { isFollowUp?: boolean; title: string; result: string; openPoints?: Point[]; isWaitingForUser?: boolean }
 
 type World = {
   /** What the store holds at the start. */
   store?: Record<string, unknown>
   /** What `git status --porcelain -z` prints now; left out, the folder is no repository. */
   git?: () => string
+  /** The clock at the start; left out, a moment early on 1 January 1970. */
+  now?: number
+  /** The transcript `$.session.messages()` reads; left out, none. */
+  messages?: SessionMessage[]
 }
 
 /** The engine beneath the mod: the calls it makes, answered from memory. */
 function engine(on: On, reply: (prompt: string) => Reply | null, world: World = {}) {
-  const clock = mock.clock(on, { now: 1_000_000 })
+  const clock = mock.clock(on, { now: world.now ?? 1_000_000 })
   const notices: { text: string; title?: string }[] = []
   const statuses: (string | undefined)[] = []
   const fills: string[] = []
-  mock.store(on, world.store)
+  const toasts: string[] = []
+  // The store by hand, so a test can read what the mod kept.
+  const store = new Map(Object.entries(world.store ?? {}))
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => {
+    store.set(e.key, e.value)
+
+    return { value: undefined }
+  })
+  on('store.delete', (_, e) => {
+    store.delete(e.key)
+
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+
+    return { value: undefined }
+  })
   on('ui.notify', (_, e) => {
     notices.push({ text: e.text, title: e.title })
 
@@ -64,7 +89,7 @@ function engine(on: On, reply: (prompt: string) => Reply | null, world: World = 
     return { isFilled: true }
   })
   on('session.id', () => ({ value: 'session-1' }))
-  on('session.messages', () => ({ value: [] }))
+  on('session.messages', () => ({ value: world.messages ?? [] }))
   on('command.register', () => ({ value: { command: 'history' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [] }))
@@ -82,7 +107,22 @@ function engine(on: On, reply: (prompt: string) => Reply | null, world: World = 
       : { value: { isAnswered: true, text: JSON.stringify(answer), usage } }
   })
 
-  return { clock, notices, statuses, fills }
+  return { clock, notices, statuses, fills, toasts, store }
+}
+
+/** The transcript row a prompt the person typed is kept as. */
+function promptRow(uuid: string, text: string): SessionAppendInput {
+  return {
+    door: 'prompt',
+    origin: { kind: 'composer' },
+    uuid,
+    message: { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+  }
+}
+
+/** Presses a link the pane drew as Markdown: in VS Code every press, on desktop the jump to the conversation. */
+async function pressLink<S extends (typeof SURFACES)[number]>(ui: Mounted<S, 'Pane'>, key: string) {
+  await ui.press({ key, link: { href: `https://task-history.invalid/${encodeURIComponent(key)}` } })
 }
 
 /** A summary prompt less the task before, the part the mock answers by. */
@@ -151,11 +191,12 @@ test('a task shows its summary, open question and files on every surface', async
       expect(await ui.find({ type: 'Text', text: /Fix the login bug/ })).toBeDefined()
     }
 
-    expect(await ui.find({ type: 'Text', text: /Add a regression test\?/ })).toBeDefined()
+    // The question shows under the collapsed row, as a press of its own.
+    expect(await ui.find({ text: /Add a regression test\?/, ...(surface === 'desktop' && { in: 'point:t1:0' }) })).toBeDefined()
 
     await pressRow(ui, surface, 't1')
     expect(await ui.find({ type: 'Text', text: /→ Session check fixed in login\.ts/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /waiting for you · 1m12s · 2 tools/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /waiting for you · \d\d:\d\d · 1m12s · 2 tools/ })).toBeDefined()
     expect(await ui.find({ text: /1 file changed/, ...(surface === 'desktop' && { in: 'files:t1' }) })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'src/login.ts' })).toBeUndefined()
 
@@ -355,24 +396,216 @@ test('paths and git readings on Windows and POSIX', async () => {
   expect(changedPaths(before, after)).toEqual(['a.ts', 'c.ts'])
 })
 
-test('/history debug counts the drawings of the pane', async ($, on) => {
-  engine(on, () => null)
+test('a collapsed task shows its result in one line', async ($, on) => {
+  const { clock } = engine(on, () => ({ title: 'Translate the README', result: 'README translated to English' }))
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Translate the README to English', 'Done: the README is in English now.')
+  await clock.advance(10)
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: 'Text', text: '    → README translated to English' })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('with result lines off a collapsed task is one line', { options: { resultLines: false } }, async ($, on) => {
+  const { clock } = engine(on, () => ({ title: 'Translate the README', result: 'README translated to English' }))
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Translate the README to English', 'Done: the README is in English now.')
+  await clock.advance(10)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /README translated to English/ })).toBeUndefined()
+  await ui.press({ key: 't1' })
+  expect(await ui.find({ type: 'Text', text: '→ README translated to English' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a press on an open point puts what takes it up into the prompt', async ($, on) => {
+  const { clock, fills } = engine(on, () => ({
+    title: 'Fix the login bug',
+    result: 'Session check fixed',
+    openPoints: [{ text: 'Add a regression test?', prompt: 'Yes, add a regression test for the session check' }, 'Release 0.3.0?'],
+    isWaitingForUser: true,
+  }))
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Fix the login bug', 'Fixed. Add a regression test, or release 0.3.0?')
+  await clock.advance(10)
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+
+    // The first point shows under the collapsed row.
+    await pressRow(ui, surface, 'point:t1:0')
+    expect(fills.at(-1)).toBe('Yes, add a regression test for the session check')
+
+    // A point the summary gave no reply for puts in the point itself.
+    await pressRow(ui, surface, 't1')
+    expect(await ui.find({ text: /\? Release 0\.3\.0\?/, ...(surface === 'desktop' && { in: 'point:t1:1' }) })).toBeDefined()
+    await pressRow(ui, surface, 'point:t1:1')
+    expect(fills.at(-1)).toBe('Release 0.3.0?')
+
+    await pressRow(ui, surface, 't1')
+    await ui.unmount()
+  }
+})
+
+test('a task links back to its prompt in the conversation', async ($, on) => {
+  const { clock, toasts } = engine(on, () => null)
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  // The prompt's row kept before its turn starts, and after it.
+  await $.session.append(promptRow('row-1', 'Write a changelog entry'))
+  await turn($, 't1', 'Write a changelog entry', 'Added the entry.')
+  await $.turn.start({ text: 'Bump the version to 0.3.0', turnId: 't2' })
+  await $.session.append(promptRow('row-2', 'Bump the version to 0.3.0'))
+  await $.turn.complete({ answer: 'Bumped.', durationMs: 1000, isAborted: false, turnId: 't2', reason: 'answer' })
+  // A row kept long before the turn is an earlier prompt's: nothing to jump to.
+  await $.session.append(promptRow('row-old', 'Tag the release'))
+  await clock.advance(61000)
+  await turn($, 't3', 'Tag the release', 'Tagged.')
+  await clock.advance(10)
+
+  for (const surface of SURFACES) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+
+    for (const id of ['t1', 't2', 't3']) {
+      await pressRow(ui, surface, id)
+    }
+
+    expect(await ui.find({ key: 'jump:t1' })).toBeDefined()
+    expect(await ui.find({ key: 'jump:t2' })).toBeDefined()
+    expect(await ui.find({ key: 'jump:t3' })).toBeUndefined()
+
+    // Collapse again, so the next surface starts from the same place.
+    for (const id of ['t1', 't2', 't3']) {
+      await pressRow(ui, surface, id)
+    }
+
+    await ui.unmount()
+  }
+
+  // Here nothing scrolls the conversation: the press says so, and the jump is no longer offered there.
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: 't1' })
+  await ui.press({ key: 'jump:t1' })
+  expect(toasts.at(-1)).toMatch(/cannot show the prompt in the conversation/)
+  expect(await ui.find({ key: 'jump:t1' })).toBeUndefined()
+  expect(await ui.find({ key: 'prompt:t1' })).toBeDefined()
+  await ui.unmount()
+
+  // On desktop the jump is a link, a press the person's own; it is offered there until it fails there too.
+  const desktop = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await desktop.find({ key: 'jump:t1' })).toBeDefined()
+  await pressLink(desktop, 'jump:t1')
+  expect(await desktop.find({ key: 'jump:t1' })).toBeUndefined()
+  await desktop.unmount()
+})
+
+test('tasks of earlier days are listed under their day, with clock times', async ($, on) => {
+  const yesterday = new Date(2026, 9, 25, 14, 32).getTime()
+  const earlier = {
+    id: 'old-1',
+    prompt: 'Update the README',
+    title: 'Update the README',
+    result: 'README updated',
+    openPoints: [],
+    status: 'done',
+    startedAt: yesterday,
+    endedAt: yesterday + 240000,
+    runningSince: null,
+    durationMs: 240000,
+    tools: 2,
+    files: [],
+    followUps: [],
+    isSummarized: true,
+    needsGrouping: false,
+  }
+  const { clock } = engine(on, () => null, {
+    now: new Date(2026, 9, 26, 15, 0).getTime(),
+    store: { sessions: ['session-1'], 'session:session-1': [earlier] },
+  })
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Write a changelog entry', 'Added the entry.')
+  await clock.advance(10)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const heads = await ui.findAll({ type: 'Text', text: /^── / })
+  expect(heads.map(head => head.text)).toEqual(['── Today ──', '── Yesterday ──'])
+  expect((await ui.find({ key: 't1' }))?.text).toMatch(/Write a changelog entry now$/)
+  expect((await ui.find({ key: 'old-1' }))?.text).toMatch(/Update the README 14:32$/)
+
+  await ui.press({ key: 'old-1' })
+  expect(await ui.find({ type: 'Text', text: 'done · 14:32–14:36 · 4m00s · 2 tools' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a list of today alone names no day', async ($, on) => {
+  const { clock } = engine(on, () => null, { now: new Date(2026, 9, 26, 15, 0).getTime() })
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Write a changelog entry', 'Added the entry.')
+  await clock.advance(10)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /^── / })).toBeUndefined()
+  await ui.press({ key: 't1' })
+  expect(await ui.find({ type: 'Text', text: 'done · 15:00 · 1s · 0 tools' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('tasks rebuilt from a transcript show no time, which is not known', async ($, on) => {
+  const { clock } = engine(on, () => null, {
+    now: new Date(2026, 9, 26, 15, 0).getTime(),
+    messages: [
+      { role: 'user', text: 'Fix the flaky test', toolUses: [] },
+      { role: 'assistant', text: 'It waits for the server now.', toolUses: [] },
+    ],
+  })
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await clock.advance(10)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: '── Earlier ──' })).toBeDefined()
+  expect((await ui.find({ key: 'transcript-0' }))?.text).toMatch(/✓ Fix the flaky test\s*$/)
+  await ui.press({ key: 'transcript-0' })
+  expect(await ui.find({ type: 'Text', text: 'done · 0s · 0 tools' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a session another process left out of the index is kept, and goes first', async ($, on) => {
+  const listed = Array.from({ length: 30 }, (_, index) => `s${index}`)
+  const sessions = Object.fromEntries(listed.map(id => [`session:${id}`, []]))
+  const { store } = engine(on, () => null, {
+    store: { sessions: listed, ...sessions, 'session:orphan': [] },
+  })
 
   await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
   await turn($, 't1', 'Write a changelog entry', 'Added the entry.')
 
-  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await ui.pointer({ type: 'down', x: 3, y: 0, button: 'left', in: 't1' })
-  await ui.unmount()
+  // 32 sessions with this one: the orphan, oldest, and s0 make room.
+  expect(store.has('session:orphan')).toBe(false)
+  expect(store.has('session:s0')).toBe(false)
+  expect(store.has('session:s1')).toBe(true)
+  expect(store.get('sessions')).toEqual([...listed.slice(1), 'session-1'])
+})
 
-  const result = await $.command.run({
-    command: 'history',
-    args: 'debug',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: true, columns: 160 },
+test('an unlisted session within the limit joins the index', async ($, on) => {
+  const { store } = engine(on, () => null, {
+    store: { sessions: ['a'], 'session:a': [], 'session:b': [] },
   })
-  expect(result.text).toMatch(/Pane drawn [2-9]\d* times since load/)
-  expect(result.text).toMatch(/Last drawing: desktop, dock, focused false, 44 columns/)
+
+  await $.session.start({ cwd: '/work/proj', surface: 'terminal', isInteractive: true })
+  await turn($, 't1', 'Write a changelog entry', 'Added the entry.')
+
+  expect(store.get('sessions')).toEqual(['b', 'a', 'session-1'])
+  expect(store.has('session:b')).toBe(true)
 })
 
 const ASKS = {
@@ -403,11 +636,11 @@ test('an answer that becomes a task of its own still checks the question off', a
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ key: 't1' }))?.text).toMatch(/✓ Fix the login bug/)
-  expect(await ui.find({ type: 'Text', text: /Add a regression test\?/ })).toBeUndefined()
+  expect(await ui.find({ text: /Add a regression test\?/ })).toBeUndefined()
 
   await ui.press({ key: 't1' })
   expect(await ui.find({ type: 'Text', text: /✓ Add a regression test\?/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /\? Add a regression test\?/ })).toBeUndefined()
+  expect(await ui.find({ text: /\? Add a regression test\?/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -439,7 +672,7 @@ test('an answer sent before the summary arrives checks its question off', async 
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect((await ui.find({ key: 't1' }))?.text).toMatch(/✓ Fix the login bug/)
-  expect(await ui.find({ type: 'Text', text: /Add a regression test\?/ })).toBeUndefined()
+  expect(await ui.find({ text: /Add a regression test\?/ })).toBeUndefined()
 
   await $.turn.complete({ answer: 'Added the test.', durationMs: 1000, isAborted: false, turnId: 't2', reason: 'answer' })
   await clock.advance(10)
@@ -464,7 +697,7 @@ test('a short answer checks the question off while the task goes on', async ($, 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   await ui.press({ key: 't1' })
   expect(await ui.find({ type: 'Text', text: /✓ Add a regression test\?/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /\? Add a regression test\?/ })).toBeUndefined()
+  expect(await ui.find({ text: /\? Add a regression test\?/ })).toBeUndefined()
 
   await $.turn.complete({ answer: 'Added the test.', durationMs: 1000, isAborted: false, turnId: 't2', reason: 'answer' })
   await clock.advance(10)

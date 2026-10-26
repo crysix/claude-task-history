@@ -13,12 +13,16 @@ export type Task = {
   result: string
   /** Questions or next steps the last reply left to the person. */
   openPoints: string[]
+  /** What the person would send to take up each open point, in step with `openPoints`; '' where none came. */
+  openPrompts?: string[]
   /** Questions the task waited on that the person has answered since: shown checked off. */
   answered?: string[]
   /** True once the person replied to the latest answer: a summary that comes after finds its questions answered. */
   isReplied?: boolean
   status: TaskStatus
   startedAt: number
+  /** When the task's last turn ended; absent until one has. */
+  endedAt?: number
   /** When the turn running now began; null while no turn runs on the task. */
   runningSince: number | null
   /** The finished turns' time, summed. */
@@ -33,6 +37,10 @@ export type Task = {
   needsGrouping: boolean
   /** The reply a summary is still owed for, kept so a reload can catch up; null once done. */
   pendingAnswer?: string | null
+  /** The transcript id of the prompt that started the task, to scroll the conversation back to it. */
+  messageId?: string
+  /** Rebuilt from a transcript the mod did not watch: when it ran is not known. */
+  isRebuilt?: boolean
 }
 
 declare module 'claude-code' {

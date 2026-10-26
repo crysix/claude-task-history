@@ -32,6 +32,16 @@ export function normalize(text: string): string {
   return oneLine(text).toLowerCase()
 }
 
+/** The key a task and the transcript row of its prompt share, short enough to compare often. */
+export function promptKey(text: string): string {
+  return normalize(text).slice(0, 300)
+}
+
+/** Text shown as a markdown link's label, its marks taken literally. */
+export function escapeMarkdown(text: string): string {
+  return text.replace(/[\\[\]*_`<>]/g, mark => `\\${mark}`)
+}
+
 export function fallbackTitle(prompt: string): string {
   return cut(oneLine(prompt), 60) || '(empty prompt)'
 }
@@ -66,6 +76,7 @@ export function newTask(id: string, prompt: string, now: number, needsGrouping: 
     title: fallbackTitle(prompt),
     result: '',
     openPoints: [],
+    openPrompts: [],
     answered: [],
     isReplied: false,
     status: 'running',
@@ -103,6 +114,7 @@ export function markReplied(task: Task): Task {
     ...task,
     status: 'done',
     openPoints: [],
+    openPrompts: [],
     answered: addAnswered(task.answered, task.openPoints),
     isReplied: true,
   }
@@ -145,6 +157,66 @@ export function formatAge(ms: number): string {
   return hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`
 }
 
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** The local time of day, "14:32". */
+export function clockTime(ms: number): string {
+  const date = new Date(ms)
+
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+function startOfDay(ms: number): number {
+  const date = new Date(ms)
+  date.setHours(0, 0, 0, 0)
+
+  return date.getTime()
+}
+
+export function isSameDay(one: number, other: number): boolean {
+  return startOfDay(one) === startOfDay(other)
+}
+
+/** The local day a time falls on, as a list heads it: "Today", "Yesterday", "Fri 24 Oct". */
+export function dayLabel(ms: number, now: number): string {
+  // Rounded, since a day that changes the clock is an hour short or long.
+  const days = Math.round((startOfDay(now) - startOfDay(ms)) / 86400000)
+
+  if (days <= 0) {
+    return 'Today'
+  }
+
+  if (days === 1) {
+    return 'Yesterday'
+  }
+
+  const date = new Date(ms)
+  const year = date.getFullYear() === new Date(now).getFullYear() ? '' : ` ${date.getFullYear()}`
+
+  return `${DAYS[date.getDay()]} ${date.getDate()} ${MONTHS[date.getMonth()]}${year}`
+}
+
+/** When a task ran by the clock: "14:32", "14:32–14:36", the end's day named when it is another. */
+export function timeSpan(task: Task, now: number): string {
+  if (task.isRebuilt === true) {
+    return ''
+  }
+
+  const start = clockTime(task.startedAt)
+  const end = task.status === 'running' || task.endedAt === undefined ? undefined : task.endedAt
+
+  if (end === undefined) {
+    return start
+  }
+
+  if (!isSameDay(task.startedAt, end)) {
+    return `${start}–${dayLabel(end, now)} ${clockTime(end)}`
+  }
+
+  return clockTime(end) === start ? start : `${start}–${clockTime(end)}`
+}
+
 /** A path below `cwd` as relative, on Windows (`C:\x\y`) as on POSIX; any other as it is. */
 export function relativePath(path: string, cwd: string): string {
   const file = path.replace(/\\/g, '/')
@@ -166,6 +238,8 @@ export type Summary = {
   title: string
   result: string
   openPoints: string[]
+  /** What the person would send to take up each open point; '' where the model gave none. */
+  openPrompts: string[]
   isWaitingForUser: boolean
 }
 
@@ -213,7 +287,10 @@ export function summaryPrompt(task: Task, answer: string, previous: Task | undef
     '- "title": the whole task in at most 6 words, no trailing period',
     '- "result": what the whole task achieved so far, in at most 20 words, keeping what the result so far says ' +
       'unless the latest reply changes it; if nothing was done yet, what the assistant waits for',
-    '- "openPoints": up to 3 short questions or proposed next steps the reply leaves to the person, else []',
+    '- "openPoints": up to 3 questions or proposed next steps the reply leaves to the person, else []; each an ' +
+      'object with "text", the point in a few words, and "prompt", what the person would send to take it up, ' +
+      'as an instruction to the assistant (for "Add a regression test?": "Yes, add a regression test for the ' +
+      'session check")',
     '- "isWaitingForUser": true when the reply ends by asking the person a question or for a decision',
   ]
 
@@ -247,16 +324,25 @@ export function parseSummary(text: string): Summary | undefined {
       return undefined
     }
 
-    const points = Array.isArray(value.openPoints) ? value.openPoints : []
+    // A point is `{ text, prompt }`; a plain string, as models answered before, stands for its text.
+    const points = (Array.isArray(value.openPoints) ? value.openPoints : [])
+      .map((point: unknown) => {
+        const item = typeof point === 'object' && point !== null ? (point as Record<string, unknown>) : { text: point }
+
+        return {
+          text: typeof item.text === 'string' ? oneLine(item.text) : '',
+          prompt: typeof item.prompt === 'string' ? oneLine(item.prompt) : '',
+        }
+      })
+      .filter(point => point.text.length > 0)
+      .slice(0, 3)
 
     return {
       isFollowUp: value.isFollowUp === true,
       title: cut(title, 80),
       result: typeof value.result === 'string' ? cut(oneLine(value.result), 240) : '',
-      openPoints: points
-        .filter((point): point is string => typeof point === 'string' && point.trim().length > 0)
-        .slice(0, 3)
-        .map(point => cut(oneLine(point), 200)),
+      openPoints: points.map(point => cut(point.text, 200)),
+      openPrompts: points.map(point => cut(point.prompt, 500)),
       isWaitingForUser: value.isWaitingForUser === true,
     }
   } catch {
@@ -272,13 +358,16 @@ function settledStatus(status: TaskStatus, isWaiting: boolean): TaskStatus {
   return status
 }
 
+type Settled = { status: TaskStatus; openPoints: string[]; openPrompts: string[]; answered: string[] }
+
 /** A summary's points and status for its task; questions the person replied to before it came are answered. */
-function settle(task: Task, summary: Summary): { status: TaskStatus; openPoints: string[]; answered: string[] } {
+function settle(task: Task, summary: Summary): Settled {
   const isAnswered = summary.isWaitingForUser && task.isReplied === true
 
   return {
     status: settledStatus(task.status, summary.isWaitingForUser && !isAnswered),
     openPoints: isAnswered ? [] : summary.openPoints,
+    openPrompts: isAnswered ? [] : summary.openPrompts,
     answered: isAnswered ? summary.openPoints : [],
   }
 }
@@ -316,6 +405,8 @@ export function applySummary(
       runningSince: task.runningSince,
       result: summary.result || previous.result,
       openPoints: settled.openPoints,
+      openPrompts: settled.openPrompts,
+      endedAt: task.endedAt ?? previous.endedAt,
       answered: addAnswered(previous.answered, [...(task.answered ?? []), ...settled.answered]),
       isReplied: task.isReplied,
       isSummarized: true,
@@ -333,6 +424,7 @@ export function applySummary(
       title: summary.title,
       result: summary.result || one.result,
       openPoints: settled.openPoints,
+      openPrompts: settled.openPrompts,
       answered: addAnswered(one.answered, settled.answered),
       status: settled.status,
       isSummarized: true,
@@ -381,7 +473,7 @@ export function tasksFromMessages(messages: readonly SessionMessage[], now: numb
       }
 
       close()
-      current = newTask(`transcript-${index}`, message.text, now, false)
+      current = { ...newTask(`transcript-${index}`, message.text, now, false), isRebuilt: true }
       tasks.push(current)
       answer = ''
 

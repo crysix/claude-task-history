@@ -8,12 +8,16 @@ import {
   addTask,
   applySummary,
   changedPaths,
+  clockTime,
   cut,
+  dayLabel,
+  escapeMarkdown,
   excerpt,
   firstLine,
   formatAge,
   formatDuration,
   isAck,
+  isSameDay,
   markReplied,
   newTask,
   normalize,
@@ -23,11 +27,13 @@ import {
   patch,
   parseSummary,
   projectName,
+  promptKey,
   relativePath,
   statusText,
   SUMMARY_SYSTEM,
   summaryPrompt,
   tasksFromMessages,
+  timeSpan,
 } from './logic'
 
 const PANE = 'task-history'
@@ -70,6 +76,7 @@ let isSummarizing = true
 let notifyLevel: NotifyLevel = 'all'
 let isStatusLine = true
 let isGitTracking = true
+let isResultLine = true
 // The repository's top folder: unknown until asked, null outside a repository.
 let gitRoot: string | null | undefined
 // `git status` as the running turn found it at its start.
@@ -81,12 +88,14 @@ let submitted: Submitted | undefined
 let wantsPane = true
 let hasAutoOpened = false
 let hasLoggedFailure = false
-// For `/history debug`: when the pane was drawn, with what, and what moved its focus.
-const drawnAt: number[] = []
-let lastDrawing = ''
-const focusMoves: string[] = []
 // Surfaces where the pane's row module failed: they get links instead.
 const faulted = new Set<string>()
+// Surfaces whose conversation cannot be scrolled to a prompt: they show no jump.
+const jumpless = new Set<string>()
+// The transcript rows of prompts no task has taken yet, newest last.
+const promptRows: { key: string; uuid: string; at: number }[] = []
+/** A prompt's row is kept just before its turn starts; one older than this belongs to an earlier prompt. */
+const PROMPT_ROW_MS = 60000
 let cwd = ''
 
 function paneTitle() {
@@ -102,7 +111,13 @@ async function persist($: Engine) {
 
   const list = await read($, tasks)
   const stored = await $.store.get(SESSIONS_KEY)
-  const known = Array.isArray(stored) ? stored.filter((one): one is string => typeof one === 'string') : []
+  const listed = Array.isArray(stored) ? stored.filter((one): one is string => typeof one === 'string') : []
+  // A session saved while another process rewrote the index is missing from it: it counts as the oldest.
+  const unlisted = (await $.store.keys())
+    .filter(key => key.startsWith('session:'))
+    .map(key => key.slice('session:'.length))
+    .filter(one => !listed.includes(one))
+  const known = [...unlisted, ...listed]
 
   if (list.length === 0 && !known.includes(id)) {
     return
@@ -331,6 +346,72 @@ async function fillPrompt($: Engine, id: string) {
   }
 }
 
+/** Puts what takes up an open point into the prompt: the summary's reply for it, else the point itself. */
+async function fillPoint($: Engine, id: string, index: number) {
+  const task = (await read($, tasks)).find(one => one.id === id)
+  const text = task?.openPrompts?.[index] || task?.openPoints[index]
+
+  if (text) {
+    await $.prompt.fill({ text })
+  }
+}
+
+/** Gives the task running now the transcript row of its prompt, or keeps the row for the task about to start. */
+async function linkPrompt($: Engine, key: string, uuid: string) {
+  const id = await read($, activeId)
+  const task = (await read($, tasks)).find(one => one.id === id)
+
+  if (task !== undefined && task.messageId === undefined && promptKey(task.prompt) === key) {
+    await update($, tasks, list => patch(list, task.id, one => ({ ...one, messageId: uuid })))
+
+    return
+  }
+
+  promptRows.push({ key, uuid, at: await $.clock.now() })
+
+  if (promptRows.length > 10) {
+    promptRows.shift()
+  }
+}
+
+/** The transcript id of the newest recent prompt row with this key, taken off the list. */
+function takePromptRow(key: string, now: number): string | undefined {
+  const index = promptRows.findLastIndex(row => row.key === key && now - row.at < PROMPT_ROW_MS)
+
+  return index < 0 ? undefined : promptRows.splice(index, 1)[0]?.uuid
+}
+
+/** Scrolls the conversation to the prompt that started a task; where it cannot, says so and stops offering it. */
+async function jump($: Engine, surface: string, id: string) {
+  const messageId = (await read($, tasks)).find(one => one.id === id)?.messageId
+
+  if (messageId === undefined) {
+    return
+  }
+
+  let deny: string | undefined
+  let isUnsupported = false
+
+  try {
+    deny = (await $.ui.scroll({ to: { requestId: messageId }, block: 'start' })).deny
+    isUnsupported = deny !== undefined && /no-surface|none scrolls|not person-initiated/.test(deny)
+  } catch (error) {
+    deny = error instanceof Error ? error.message : String(error)
+    isUnsupported = true
+  }
+
+  if (deny === undefined) {
+    return
+  }
+
+  $.ui.toast(`task-history: cannot show the prompt in the conversation (${deny})`)
+
+  if (isUnsupported) {
+    jumpless.add(surface)
+    $.ui.invalidate('ui.render')
+  }
+}
+
 async function refresh($: Engine) {
   const now = await $.clock.now()
   const isRunning = (await read($, tasks)).some(task => task.status === 'running')
@@ -351,6 +432,7 @@ export const register: Register = (on, options) => {
   notifyLevel = options.notify === 'waiting' || options.notify === 'off' ? options.notify : 'all'
   isStatusLine = options.statusLine !== false
   isGitTracking = options.gitFiles !== false
+  isResultLine = options.resultLines !== false
 
   on('session.start', async ($, e, next) => {
     cwd = e.cwd
@@ -405,6 +487,19 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // The row a prompt is kept as: its id is what the conversation scrolls back to.
+  // The row is stored by `next` alone, so a failure after it costs the jump and nothing else.
+  on('session.append', { door: 'prompt' }, async ($, e, next) => {
+    const stored = await next(e)
+
+    if (e.agentId === undefined && e.message.type === 'user' && e.message.isMeta !== true) {
+      const text = e.message.content.map(block => (typeof block.text === 'string' ? block.text : '')).join('\n')
+      await linkPrompt($, promptKey(text), e.uuid).catch(() => undefined)
+    }
+
+    return stored
+  })
+
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) {
       return next(e)
@@ -435,7 +530,8 @@ export const register: Register = (on, options) => {
       await addFollowUp($, last.id, text, now)
       await resumeTask($, last.id, now, true)
     } else {
-      const task = newTask(e.turnId, text, now, last !== undefined)
+      const messageId = takePromptRow(promptKey(text), now)
+      const task = { ...newTask(e.turnId, text, now, last !== undefined), ...(messageId !== undefined && { messageId }) }
       await update($, tasks, list => addTask(last === undefined ? list : patch(list, last.id, markReplied), task))
       await update($, activeId, () => task.id)
     }
@@ -485,11 +581,13 @@ export const register: Register = (on, options) => {
     const line = firstLine(e.answer)
     const isOwed = isSummarizing && e.answer.trim().length > 0
     const touched = await gitChanges($, e.turnId)
+    const now = await $.clock.now()
 
     await update($, tasks, list =>
       patch(list, id, task => ({
         ...task,
         status,
+        endedAt: now,
         runningSince: null,
         durationMs: task.durationMs + e.durationMs,
         result: isSummarizing && task.isSummarized ? task.result : line || task.result,
@@ -514,19 +612,6 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: COMMAND }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
-
-    if (arg === 'debug') {
-      const now = await $.clock.now()
-      const recent = drawnAt.filter(at => now - at < 10000).length
-
-      return {
-        text: [
-          `Pane drawn ${drawnAt.length} times since load, ${recent} in the last 10 s.`,
-          `Last drawing: ${lastDrawing || 'none'}`,
-          `Focus moves (${focusMoves.length}): ${focusMoves.slice(-8).join(', ') || 'none'}`,
-        ].join('\n'),
-      }
-    }
 
     if (arg === 'clear') {
       await update($, tasks, () => [])
@@ -555,23 +640,22 @@ export const register: Register = (on, options) => {
     return { text: opened.isPlaced ? 'Task history shown.' : `Task history is open, not drawn yet: ${opened.reason}` }
   })
 
-  on('ui.focus', { requestId: PANE }, ($, e, next) => {
-    focusMoves.push(`${e.element ?? 'engine mark'} by ${e.origin.kind}`)
-
-    if (focusMoves.length > 50) {
-      focusMoves.shift()
-    }
-
-    return next(e)
-  }).catch(($, e, next) => next(e))
-
-  // A press on a row the row module drew: `insert:<id>` fills the prompt, any other key folds.
+  // A press on a row the row module drew: `insert:<id>` fills the prompt with the task's,
+  // `point:<id>:<n>` with what takes up an open point, any other key folds.
   on('ui.message', async ($, e, next) => {
     const data: unknown = e.data
     const isPress = typeof data === 'object' && data !== null && 'press' in data && data.press === true
+    const key = e.element
 
     if (e.requestId === PANE && isPress) {
-      await (e.element.startsWith('insert:') ? fillPrompt($, e.element.slice(7)) : toggleRow($, e.element))
+      if (key.startsWith('insert:')) {
+        await fillPrompt($, key.slice('insert:'.length))
+      } else if (key.startsWith('point:')) {
+        const at = key.lastIndexOf(':')
+        await fillPoint($, key.slice('point:'.length, at), Number(key.slice(at + 1)))
+      } else {
+        await toggleRow($, key)
+      }
     }
 
     return next(e)
@@ -616,28 +700,19 @@ export const register: Register = (on, options) => {
     await read($, tick)
     const now = await $.clock.now()
     const width = Math.max(24, e.props.bodyColumns)
-    const { scroll } = e.props
-
-    drawnAt.push(now)
-
-    if (drawnAt.length > 500) {
-      drawnAt.shift()
-    }
-
-    lastDrawing =
-      `${e.surface}, ${e.props.placement}, focused ${e.props.isFocused}, ` +
-      `${e.props.bodyColumns} columns, ${scroll.bodyRows} rows, offset ${scroll.offset}`
+    const { surface } = e
 
     const toggle = (key: string) => () => void toggleRow($, key)
     const insert = (task: Task) => () => void fillPrompt($, task.id)
+    const takeUp = (task: Task, index: number) => () => void fillPoint($, task.id, index)
+    const jumpTo = (task: Task) => () => void jump($, surface, task.id)
 
     // The terminal makes a whole row one Button. The desktop app's buttons
     // flicker under the pointer, plain or not, though nothing is redrawn: there
     // the row module (row.tsx) draws each row as text and posts its presses.
     // Elsewhere (VS Code draws no Client, or the module failed) a press is a link.
-    const isRowButton = e.surface === 'terminal'
-    const Client =
-      e.surface === 'desktop' && 'Client' in elements && !faulted.has(e.surface) ? elements.Client : undefined
+    const isRowButton = surface === 'terminal'
+    const Client = surface === 'desktop' && 'Client' in elements && !faulted.has(surface) ? elements.Client : undefined
 
     const row = <T,>(key: string, parts: Part[], fallback: () => T) =>
       Client ? <Client key={key} module="./row.tsx" props={{ parts }} width="100%" /> : fallback()
@@ -645,7 +720,15 @@ export const register: Register = (on, options) => {
     const link = (key: string, label: string, onPress: () => void, isDim = false) => {
       const href = `https://task-history.invalid/${encodeURIComponent(key)}`
 
-      return <Markdown key={key} text={`[${label}](${href})`} dimColor={isDim} pressableLinks={[href]} onLinkPress={onPress} />
+      return (
+        <Markdown
+          key={key}
+          text={`[${escapeMarkdown(label)}](${href})`}
+          dimColor={isDim}
+          pressableLinks={[href]}
+          onLinkPress={onPress}
+        />
+      )
     }
 
     const fold = (key: string, isOpen: boolean, label: string) =>
@@ -660,6 +743,38 @@ export const register: Register = (on, options) => {
         )
       )
 
+    // An open point: a press puts what takes it up into the prompt.
+    const point = (task: Task, index: number, text: string) => {
+      const key = `point:${task.id}:${index}`
+
+      return isRowButton ? (
+        <Button key={key} plain onPress={takeUp(task, index)}>
+          <Text color="warning">{text}</Text>
+        </Button>
+      ) : (
+        row(key, [{ text, color: 'warning' }], () => link(key, text, takeUp(task, index)))
+      )
+    }
+
+    // Only the person's own press may scroll the conversation, and the row
+    // module's presses are its code's: on desktop the jump is a link as well.
+    const jumpLink = (task: Task) => {
+      if (task.messageId === undefined || jumpless.has(surface)) {
+        return null
+      }
+
+      const key = `jump:${task.id}`
+      const label = '↑ Show in conversation'
+
+      return isRowButton ? (
+        <Button key={key} plain dimColor onPress={jumpTo(task)}>
+          {label}
+        </Button>
+      ) : (
+        link(key, label, jumpTo(task), true)
+      )
+    }
+
     if (list.length === 0) {
       return (
         <Box flexDirection="column">
@@ -670,6 +785,19 @@ export const register: Register = (on, options) => {
     }
 
     const runningFor = (task: Task) => task.durationMs + (task.runningSince === null ? 0 : now - task.runningSince)
+
+    // Running: how long so far. Today: how long ago. Before: the clock time, under its day.
+    const when = (task: Task) => {
+      if (task.status === 'running') {
+        return formatDuration(runningFor(task))
+      }
+
+      if (task.isRebuilt === true) {
+        return ''
+      }
+
+      return isSameDay(task.startedAt, now) ? formatAge(now - task.startedAt) : clockTime(task.startedAt)
+    }
 
     const glance = (task: Task) => {
       if (task.status === 'running') {
@@ -683,10 +811,15 @@ export const register: Register = (on, options) => {
         )
       }
 
-      const point = task.openPoints[0]
+      const first = task.openPoints[0]
 
-      if (task.status === 'waiting' && point !== undefined) {
-        return <Text color="warning">{`    ${cut(point, width - 4)}`}</Text>
+      if (task.status === 'waiting' && first !== undefined) {
+        return <Box paddingLeft={4}>{point(task, 0, cut(first, width - 4))}</Box>
+      }
+
+      // The result, one line, so the list reads without expanding.
+      if (isResultLine && task.result.length > 0) {
+        return <Text dimColor>{`    → ${cut(task.result, width - 6)}`}</Text>
       }
 
       return null
@@ -694,25 +827,23 @@ export const register: Register = (on, options) => {
 
     const details = (task: Task) => {
       const filesKey = `files:${task.id}`
-      const promptKey = `prompt:${task.id}`
+      const promptFold = `prompt:${task.id}`
       const filesOpen = open.has(filesKey)
-      const promptOpen = open.has(promptKey)
+      const promptOpen = open.has(promptFold)
       const icon = ICONS[task.status]
       const time = task.status === 'running' ? formatDuration(runningFor(task)) : formatDuration(task.durationMs)
+      const facts = [icon.word, timeSpan(task, now), time, `${task.tools} tools`].filter(fact => fact.length > 0)
       const fileCount = `${task.files.length} ${task.files.length === 1 ? 'file' : 'files'} changed`
 
       return (
         <Box flexDirection="column" paddingLeft={4}>
           {task.result.length > 0 && <Text>→ {task.result}</Text>}
-          {(task.answered ?? []).map(point => (
-            <Text dimColor>✓ {point}</Text>
+          {(task.answered ?? []).map(answered => (
+            <Text dimColor>✓ {answered}</Text>
           ))}
-          {task.openPoints.map(point => (
-            <Text color="warning">? {point}</Text>
-          ))}
-          <Text dimColor>
-            {icon.word} · {time} · {task.tools} tools
-          </Text>
+          {task.openPoints.map((one, index) => point(task, index, `? ${one}`))}
+          <Text dimColor>{facts.join(' · ')}</Text>
+          {jumpLink(task)}
           {task.files.length > 0 && fold(filesKey, filesOpen, fileCount)}
           {filesOpen && (
             <Box flexDirection="column" paddingLeft={2}>
@@ -721,7 +852,7 @@ export const register: Register = (on, options) => {
               ))}
             </Box>
           )}
-          {fold(promptKey, promptOpen, 'Prompt')}
+          {fold(promptFold, promptOpen, 'Prompt')}
           {promptOpen && (
             <Box flexDirection="column" paddingLeft={2}>
               <Text>{cut(task.prompt, 2000)}</Text>
@@ -741,23 +872,30 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const ordered = [...list].reverse()
+    const days = ordered.map(task => (task.isRebuilt === true ? 'Earlier' : dayLabel(task.startedAt, now)))
+    // Days are named once the list reaches back past today.
+    const isDated = days.some(day => day !== 'Today')
+
     return (
       <Box flexDirection="column">
-        {[...list].reverse().map(task => {
+        {ordered.map((task, index) => {
           const isOpen = open.has(task.id)
           const icon = ICONS[task.status]
-          const when = task.status === 'running' ? formatDuration(runningFor(task)) : formatAge(now - task.startedAt)
+          const age = when(task)
+          const day = days[index] ?? ''
 
           return (
             <Box flexDirection="column">
+              {isDated && day !== days[index - 1] && <Text dimColor>── {day} ──</Text>}
               {isRowButton ? (
                 <Button key={task.id} plain onPress={toggle(task.id)}>
                   {isOpen ? '▾ ' : '▸ '}
                   <Text color={icon.color} bold>
                     {icon.glyph}
                   </Text>
-                  {` ${cut(task.title, width - when.length - 6)} `}
-                  <Text dimColor>{when}</Text>
+                  {` ${cut(task.title, width - age.length - 6)} `}
+                  <Text dimColor>{age}</Text>
                 </Button>
               ) : (
                 row(
@@ -766,7 +904,7 @@ export const register: Register = (on, options) => {
                     { text: isOpen ? '▾' : '▸' },
                     { text: icon.glyph, color: icon.color, isBold: true },
                     { text: task.title, isFill: true },
-                    { text: when, isDim: true },
+                    ...(age.length > 0 ? [{ text: age, isDim: true }] : []),
                   ],
                   () => (
                     <Box flexDirection="row" gap={1}>
@@ -777,7 +915,7 @@ export const register: Register = (on, options) => {
                       <Box flexGrow={1} flexShrink={1}>
                         <Text wrap="truncate-end">{task.title}</Text>
                       </Box>
-                      <Text dimColor>{when}</Text>
+                      {age.length > 0 && <Text dimColor>{age}</Text>}
                     </Box>
                   ),
                 )

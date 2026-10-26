@@ -7,29 +7,43 @@ long it took, so you can keep track of a long session (or several sessions side
 by side) without scrolling back through the whole transcript.
 
 ```
-╭ Tasks · my-project ─────────────────╮
-│ ▸ ⟳ Build task history mod     2m14s│  ← running now, live
-│     5 tools · 1 file                │
-│ ▸ ? Fix the login bug             12m│  ← Claude is waiting for you
-│     Add a regression test as well?  │
-│ ▾ ✓ Translate the README          40m│  ← expanded
-│     → Translated to English, FAQ    │
-│       shortened                     │
-│     done · 1m12s · 6 tools          │
-│     ▸ 2 files changed               │  ← expands to the paths
-│     ▸ Prompt                        │  ← expands to the full prompt
-│     ↳ “also make the FAQ shorter”   │  ← a follow-up, grouped
-│ ▸ ✓ Update composer packages      1h│
-╰─────────────────────────────────────╯
+╭ Tasks · my-project ──────────────────────╮
+│ ▸ ⟳ Build task history mod          2m14s│  ← running now, live
+│     5 tools · 1 file                     │
+│ ▸ ? Fix the login bug                 12m│  ← Claude is waiting for you
+│     Add a regression test as well?       │  ← click: a reply goes into the prompt
+│ ▾ ✓ Translate the README              40m│  ← expanded
+│     → Translated to English, FAQ         │
+│       shortened                          │
+│     done · 14:02–14:03 · 1m12s · 6 tools │
+│     ↑ Show in conversation               │  ← scrolls the chat to the prompt
+│     ▸ 2 files changed                    │  ← expands to the paths
+│     ▸ Prompt                             │  ← expands to the full prompt
+│     ↳ “also make the FAQ shorter”        │  ← a follow-up, grouped
+│ ── Yesterday ──                          │  ← earlier days under their day
+│ ▸ ✓ Update composer packages        17:45│  ← with the clock time
+│     → 3 packages updated, tests pass     │  ← the result, collapsed too
+╰──────────────────────────────────────────╯
 ```
 
 ## Features
 
 - **One line per task**, newest first: status, short title, and the running
-  time (while it runs) or its age.
+  time (while it runs), its age (today) or its clock time (earlier days).
+  Below it, dimmed, the task's one-line result, so the list reads without
+  expanding anything (`resultLines` turns that off). Once the list reaches back
+  past today, each day gets a heading (`Yesterday`, `Fri 24 Oct`).
 - **Expand a task** to see a one-line result, the questions or next steps
-  Claude left open, duration and tool calls. The changed files and the full
-  original prompt each fold out one level deeper.
+  Claude left open, when it ran by the clock (`14:02–14:03`), duration and tool
+  calls. The changed files and the full original prompt each fold out one level
+  deeper.
+- **Back to the conversation.** *Show in conversation* scrolls the chat to the
+  prompt that started the task, so the list works as a table of contents for a
+  long session.
+- **Open points are one click away.** Each open question or proposed next step
+  is clickable: it puts a reply that takes it up into the prompt (for *Add a
+  regression test?*: “Yes, add a regression test for the session check”), for
+  you to send or change first.
 - **Status at a glance:** `⟳` running, `✓` done, `?` Claude ended with a
   question and waits for you, `✗` interrupted or failed. A waiting task shows
   its open question even when collapsed.
@@ -42,7 +56,8 @@ by side) without scrolling back through the whole transcript.
   of becoming tasks of their own.
 - **AI summaries.** When a task finishes, a small model (Haiku by default)
   turns the prompt and Claude's final reply into a short title, a one-line
-  result and the open points, in the language of your prompt. Until it
+  result and the open points with a reply for each, in the language of your
+  prompt. Until it
   answers, or if it fails, the raw prompt and the reply's first line are shown.
 - **Insert a prompt again:** the expanded prompt has an *Insert into prompt*
   button that puts it back into the input box.
@@ -62,7 +77,7 @@ by side) without scrolling back through the whole transcript.
 
 ## Requirements
 
-- Claude Code with mods (function hooks): tested with 2.1.307.
+- Claude Code with mods (function hooks): tested with 2.1.310.
 - **For the right-hand column, the terminal's fullscreen layout** and a window
   at least 110 columns wide. The pane opens by itself there. On the terminal's
   main screen (no fullscreen layout, e.g. inside tmux by default) Claude Code
@@ -112,18 +127,20 @@ session (or `/reload-plugins` in a running one).
 | `/history open`  | Show the pane                                  |
 | `/history close` | Hide the pane                                  |
 | `/history clear` | Empty the history of the current session       |
-| `/history debug` | How often the pane was drawn, for bug reports  |
 
 `/history` runs at once, even while Claude is working.
 
 **Mouse:** in the terminal and the desktop app, click a task to expand or
-collapse it, and click *files changed* or *Prompt* to fold those out. In VS
-Code, click the `▸` / `▾` link in front of the row, and the *files changed* or
-*Prompt* link; a click on one opens no browser.
+collapse it, and click *files changed* or *Prompt* to fold those out. Click an
+open point to put a reply into the prompt, and *Show in conversation* to scroll
+the chat to the task's prompt. In VS Code, click the `▸` / `▾` link in front of
+the row, and the other links the same way; a click on one opens no browser.
 
 The desktop app's own buttons flicker under the pointer, so there the mod draws
 its rows itself (`hooks/row.tsx`, a surface module) and handles the click. If
-that module cannot run, the pane falls back to the links.
+that module cannot run, the pane falls back to the links. *Show in
+conversation* is a link there in any case: only a click of yours may scroll the
+chat, and the module's presses come from its code.
 
 **Keyboard:** give the pane the keyboard with `ctrl+x` then `tab` (or a click).
 `Tab` walks the rows, `Enter` expands or collapses, the arrow keys scroll and
@@ -140,9 +157,10 @@ screen.
 | Event           | What the mod does                                                                 |
 | --------------- | --------------------------------------------------------------------------------- |
 | `prompt.submit` | Remembers what you typed, slash commands as typed (`/review 42`)                   |
+| `session.append`| Notes the transcript id of your prompt, for *Show in conversation*                 |
 | `turn.start`    | Starts a new task, or adds a follow-up to the last task                            |
 | `tool.call`     | Counts tool calls and collects the files `Edit`, `Write` and `NotebookEdit` changed |
-| `turn.complete` | Records duration, status and the files `git status` shows as changed, then asks for the summary |
+| `turn.complete` | Records end time, duration, status and the files `git status` shows as changed, then asks for the summary |
 
 **What counts as a new task.** Every prompt you send starts a turn. A turn is
 added to the last task as a follow-up when:
@@ -170,6 +188,7 @@ are kept up to 4,000 characters.
 | `summaries`    | `true`  | Summarize finished tasks with a model. `false`: raw text, no model calls |
 | `summaryModel` | `haiku` | The model alias or id used for summaries                                 |
 | `notify`       | `all`   | Notifications for tasks of 20 s or more: `all`, `waiting` (only when Claude asks you something), `off` |
+| `resultLines`  | `true`  | Show each task's one-line result under its collapsed row. `false`: one line per task |
 | `statusLine`   | `true`  | Show the running or waiting task in the status line                      |
 | `gitFiles`     | `true`  | Find changed files through `git status` before and after each turn       |
 
@@ -196,7 +215,11 @@ calls at all.
   that was already modified before the turn and is changed again by a shell
   command is not detected, and files you edit yourself while Claude works are
   counted towards the task.
-- Times are relative (`12m`, `3h`), not clock times.
+- *Show in conversation* needs a surface that scrolls the chat to a message:
+  the terminal's fullscreen layout does. Where a surface cannot, the first
+  click says so and the link is not offered there again in that session.
+- A session rebuilt from its transcript has no times and no *Show in
+  conversation*: the transcript the mod reads holds neither.
 - Grouping by the model can be wrong now and then. A wrongly merged task still
   shows its prompt as a `↳` line under the task it was merged into.
 
